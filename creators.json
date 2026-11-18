@@ -1,8 +1,44 @@
 {
+  "KaiCenat": {
+    "name": "KaiCenat",
+    "platform": "twitch",
+    "handle": "KaiCenat",
+    "avatar": "https://unavatar.io/twitch/KaiCenat"
+  },
+  "Jynxzi": {
+    "name": "Jynxzi",
+    "platform": "twitch",
+    "handle": "Jynxzi",
+    "avatar": "https://unavatar.io/twitch/Jynxzi"
+  },
+  "jasontheween": {
+    "name": "jasontheween",
+    "platform": "twitch",
+    "handle": "jasontheween",
+    "avatar": "https://unavatar.io/twitch/jasontheween"
+  },
+  "MrBeast": {
+    "name": "MrBeast",
+    "platform": "youtube",
+    "handle": "MrBeast",
+    "avatar": "https://unavatar.io/youtube/MrBeast"
+  },
+  "ishowspeed": {
+    "name": "ishowspeed",
+    "platform": "youtube",
+    "handle": "ishowspeed",
+    "avatar": "https://unavatar.io/youtube/ishowspeed"
+  },
+  "xQc": {
+    "name": "xQc",
+    "platform": "twitch",
+    "handle": "xQc",
+    "avatar": "https://unavatar.io/twitch/xQc"
+  },
   "typicalgamer": {
     "name": "typicalgamer",
     "platform": "twitch",
-    "handle": "https://www.twitch.tv/typicalgamer",
+    "handle": "typicalgamer",
     "avatar": "https://unavatar.io/twitch/typicalgamer"
   }
 }

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -329,9 +330,56 @@ class WatcherManager:
         self.log_messages = collections.deque(maxlen=60)
         self.velocity_thread = None
         self.velocity_thread_running = False
+        self.live_status = {}
 
         # Load creators list
         self.creators = self._load_creators()
+
+        # Start background live checker thread (polls every 20s non-blocking)
+        threading.Thread(target=self._live_checker_loop, daemon=True).start()
+
+    def _live_checker_loop(self):
+        """Continuously checks live status of creators in the background using ThreadPool."""
+        import concurrent.futures
+
+        def check_single_creator(item):
+            c_name, info = item
+            plat = (info.get("platform") or "twitch").lower()
+            if self.is_running and self.target_name.lower() == c_name.lower():
+                return c_name.lower(), True
+
+            if plat == "twitch" or ("youtube" not in c_name.lower() and "mrbeast" not in c_name.lower()):
+                try:
+                    url = f"https://decapi.me/twitch/uptime/{c_name}"
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    res = urllib.request.urlopen(req, timeout=3.0).read().decode().strip().lower()
+                    if "offline" not in res and "not found" not in res and len(res) > 3:
+                        return c_name.lower(), True
+                except Exception:
+                    pass
+            return c_name.lower(), False
+
+        while True:
+            try:
+                with self.lock:
+                    creators_copy = list(self.creators.items())
+
+                if creators_copy:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(creators_copy))) as executor:
+                        results = dict(executor.map(check_single_creator, creators_copy))
+                    with self.lock:
+                        self.live_status.update(results)
+                    print(f"[LiveChecker] Updated live status: {results}")
+            except Exception as e:
+                print(f"[LiveChecker Error] {e}")
+            time.sleep(15)
+
+    def is_creator_live(self, c_name: str, platform: str = "twitch") -> bool:
+        """Returns whether creator is currently broadcasting live."""
+        with self.lock:
+            if self.is_running and self.target_name.lower() == c_name.lower():
+                return True
+        return self.live_status.get(c_name.lower(), False)
 
     def _load_creators(self) -> dict:
         """Loads creators from creators.json or initializes with defaults."""
@@ -712,6 +760,7 @@ class WatcherManager:
             creators_list = []
             for c_name, info in self.creators.items():
                 is_active = (self.is_running and self.target_name == c_name)
+                is_live = self.is_creator_live(c_name, info.get("platform", "twitch"))
                 creators_list.append({
                     "name": info["name"],
                     "platform": info.get("platform", "twitch"),
@@ -719,6 +768,7 @@ class WatcherManager:
                     "avatar": info.get("avatar", f"https://unavatar.io/twitch/{c_name}"),
                     "clip_count": creator_counts.get(c_name, 0),
                     "is_active": is_active,
+                    "is_live": is_live,
                 })
 
             # Group into recorded sessions matching the actual stream being recorded
@@ -733,6 +783,7 @@ class WatcherManager:
                 title, category = get_stream_reference_info(creator_name, c_platform)
                 dur_str = get_session_duration(creator_name)
                 thumb = get_session_thumbnail(creator_name)
+                is_live = self.is_creator_live(creator_name, c_platform)
 
                 # Check if full recording file exists in rec/
                 rec_files = sorted(list(REC_DIR.glob(f"{creator_name}_*.mp4")), key=lambda f: f.stat().st_size, reverse=True)
@@ -748,6 +799,7 @@ class WatcherManager:
                     "clip_count": len(c_clips),
                     "clips": c_clips,
                     "recording_url": rec_url,
+                    "is_live": is_live,
                 })
 
             # Generate chart buckets: include recent history plus live in-progress entry
@@ -1254,6 +1306,7 @@ def index_page():
           <div>
             <div class="flex items-center gap-2">
               <h2 id="streamer-name-header" class="text-sm font-bold text-white tracking-wide">Streamer Profile</h2>
+              <span id="streamer-live-badge" class="hidden bg-[#ef233c] text-white font-black text-[10px] px-2 py-0.5 rounded uppercase tracking-wider shadow-sm animate-pulse">LIVE</span>
               <span id="streamer-platform-header" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-neutral-800 text-white uppercase border border-neutral-700">TWITCH</span>
               <div id="streamer-status-pill" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-neutral-900 text-neutral-300 border border-neutral-800">
                 <span class="w-2 h-2 rounded-full bg-neutral-600"></span>
@@ -1762,6 +1815,11 @@ def index_page():
       activeWatcherTarget = c.handle || c.name;
 
       document.getElementById('streamer-name-header').textContent = c.name;
+      const liveBadge = document.getElementById('streamer-live-badge');
+      if (liveBadge) {
+        if (c.is_live) liveBadge.classList.remove('hidden');
+        else liveBadge.classList.add('hidden');
+      }
       document.getElementById('streamer-avatar-header').src = c.avatar || `/static/avatars/ishowspeed.png`;
       document.getElementById('streamer-platform-header').textContent = (c.platform || 'TWITCH').toUpperCase();
       document.getElementById('streamer-url-header').textContent = c.handle || c.name;
@@ -1986,6 +2044,14 @@ def index_page():
         timer.textContent = "00:00:00";
       }
 
+      // Update streamer live badge
+      const curCreatorObj = allCreatorsData.find(c => c.name === activeCreator);
+      const liveBadge = document.getElementById('streamer-live-badge');
+      if (liveBadge) {
+        if (curCreatorObj && curCreatorObj.is_live) liveBadge.classList.remove('hidden');
+        else liveBadge.classList.add('hidden');
+      }
+
       // 3. Chart update
       if (data.bucket_history && data.bucket_history.length > 0) {
         if (!chartInstance) initChart();
@@ -2044,12 +2110,23 @@ def index_page():
         return `
           <div onclick="onSidebarCreatorClick('${escapeHtml(c.name)}')"
             class="flex items-center justify-between px-2.5 py-2 rounded-xl text-sm font-medium transition cursor-pointer group ${activeClass}">
-            <div class="flex items-center gap-3 overflow-hidden">
-              <img src="${c.avatar}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(c.name)}&background=27272a&color=ffffff'"
-                class="w-7 h-7 rounded-full object-cover shrink-0 border border-neutral-800" />
+            <div class="flex items-center gap-2.5 overflow-hidden">
+              <div class="relative shrink-0">
+                <img src="${c.avatar}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(c.name)}&background=27272a&color=ffffff'"
+                  class="w-7 h-7 rounded-full object-cover shrink-0 border ${c.is_live ? 'border-red-500 ring-2 ring-red-500/40' : 'border-neutral-800'}" />
+                ${c.is_live ? `
+                  <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-red-600 border border-black rounded-full animate-ping"></span>
+                  <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-red-600 border border-black rounded-full"></span>
+                ` : ''}
+              </div>
               <span class="truncate text-xs font-semibold">${escapeHtml(c.name)}</span>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
+              ${c.is_live ? `
+                <span class="bg-[#ef233c] text-white font-black text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider shadow-sm animate-pulse flex items-center gap-1">
+                  LIVE
+                </span>
+              ` : ''}
               ${c.clip_count > 0 ? `<span class="text-[10px] font-mono font-bold text-neutral-300 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded-full">${c.clip_count}</span>` : ''}
               <button onclick="event.stopPropagation(); removeCreator('${escapeHtml(c.name)}')"
                 title="Remove creator"
@@ -2069,7 +2146,7 @@ def index_page():
         const cur = select.value;
         select.innerHTML = `<option value="">👤 No creator ⌵</option>` + creators.map(c => `
           <option value="${escapeHtml(c.handle || c.name)}" ${cur === (c.handle || c.name) ? 'selected' : ''}>
-            ${escapeHtml(c.name)} (${(c.platform || 'Twitch').toUpperCase()})
+            ${c.is_live ? '🔴 ' : ''}${escapeHtml(c.name)} ${c.is_live ? '(LIVE)' : ''} (${(c.platform || 'Twitch').toUpperCase()})
           </option>
         `).join('');
       });
@@ -2475,6 +2552,11 @@ def index_page():
               <div class="relative w-28 md:w-36 aspect-video rounded-xl bg-neutral-900 overflow-hidden shrink-0 shadow-sm cursor-pointer group"
                    onclick="openReviewModal('${session.recording_url || session.clips[0].url}', '${session.clips[0].srt_url || ''}', '${escapeHtml(session.title)}')">
                 <img src="${session.thumb}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(session.streamer)}&background=18181b&color=ffffff'" class="w-full h-full object-cover group-hover:scale-105 transition" />
+                ${session.is_live ? `
+                  <span class="absolute top-1.5 left-1.5 bg-[#ef233c] text-white font-black text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider shadow z-10 animate-pulse">
+                    LIVE
+                  </span>
+                ` : ''}
                 <span class="absolute bottom-1 right-1 bg-black/85 text-white font-mono text-[10px] font-bold px-1.5 py-0.5 rounded shadow">
                   ${session.duration.split(' ')[0]}
                 </span>
@@ -2483,7 +2565,14 @@ def index_page():
                 </div>
               </div>
               <div class="overflow-hidden">
-                <h3 class="font-black text-sm md:text-base text-neutral-950 truncate">${escapeHtml(session.title)}</h3>
+                <div class="flex items-center gap-2 truncate">
+                  ${session.is_live ? `
+                    <span class="bg-[#ef233c] text-white font-black text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider shadow-sm animate-pulse shrink-0">
+                      LIVE
+                    </span>
+                  ` : ''}
+                  <h3 class="font-black text-sm md:text-base text-neutral-950 truncate">${escapeHtml(session.title)}</h3>
+                </div>
                 <p class="text-xs text-neutral-500 font-medium truncate mt-0.5">
                   ${session.streamer} &bull; ${session.category || (session.platform ? session.platform.toUpperCase() : 'Twitch')} &bull; ${session.duration} &bull; ${session.clip_count} clips &bull; made today
                 </p>
