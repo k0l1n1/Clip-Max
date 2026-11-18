@@ -11,12 +11,6 @@
     "handle": "Jynxzi",
     "avatar": "https://unavatar.io/twitch/Jynxzi"
   },
-  "jasontheween": {
-    "name": "jasontheween",
-    "platform": "twitch",
-    "handle": "jasontheween",
-    "avatar": "https://unavatar.io/twitch/jasontheween"
-  },
   "MrBeast": {
     "name": "MrBeast",
     "platform": "youtube",
@@ -40,5 +34,17 @@
     "platform": "twitch",
     "handle": "typicalgamer",
     "avatar": "https://unavatar.io/twitch/typicalgamer"
+  },
+  "lacy": {
+    "name": "lacy",
+    "platform": "twitch",
+    "handle": "https://www.twitch.tv/lacy",
+    "avatar": "https://unavatar.io/twitch/lacy"
+  },
+  "jasontheween": {
+    "name": "jasontheween",
+    "platform": "twitch",
+    "handle": "https://twitch.tv/jasontheween",
+    "avatar": "https://unavatar.io/twitch/jasontheween"
   }
 }
