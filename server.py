@@ -568,6 +568,7 @@ class WatcherManager:
                 bucket_seconds=10,
                 window_minutes=3,
                 cooldown_seconds=self.cooldown,
+                multiplier=1.75,
             )
 
             # Connect chat listener

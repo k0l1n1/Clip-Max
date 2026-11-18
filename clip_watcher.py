@@ -12,7 +12,7 @@ Workflow:
     2) Reads live chat in real time:
        - Twitch: Anonymous IRC (irc.chat.twitch.tv:6667, NICK justinfan12345)
        - YouTube: Live Chat stream via pytchat
-    3) Counts messages in 10 s buckets; a spike = 2.5x the median of the last 3 min and >= --min messages.
+    3) Counts messages in 10 s buckets; a spike = 1.75x the median of the last 3 min and >= --min messages.
     4) For each spike, ffmpeg cuts 20 s before + 10 s after into clips/, center-cropped to 9:16.
     5) Whisper writes an .srt for each clip.
 """
@@ -347,15 +347,16 @@ class SpikeDetector:
     """
     Counts chat messages in 10s buckets.
     Maintains a 3-minute sliding window (18 buckets).
-    Detects spike when bucket count >= 2.5 * median(last 3 min) and count >= min_messages.
+    Detects spike when bucket count >= 1.75 * median(last 3 min) and count >= min_messages.
     """
 
-    def __init__(self, min_messages: int = 5, bucket_seconds: int = 10, window_minutes: int = 3, cooldown_seconds: int = 30):
+    def __init__(self, min_messages: int = 5, bucket_seconds: int = 10, window_minutes: int = 3, cooldown_seconds: int = 30, multiplier: float = 1.75):
         self.min_messages = min_messages
         self.bucket_seconds = bucket_seconds
         self.history_size = int((window_minutes * 60) / bucket_seconds)
         self.bucket_history = collections.deque(maxlen=self.history_size)
         self.cooldown_seconds = cooldown_seconds
+        self.multiplier = multiplier
         self.last_spike_time = -999.0
 
     def evaluate_bucket(self, count: int, current_stream_time: float) -> tuple[bool, float, float]:
@@ -364,10 +365,10 @@ class SpikeDetector:
         else:
             med = 0.0
 
-        threshold = max(float(self.min_messages), 2.5 * med)
+        threshold = max(float(self.min_messages), self.multiplier * med)
         is_spike = False
 
-        if count >= (2.5 * med) and count >= self.min_messages:
+        if count >= (self.multiplier * med) and count >= self.min_messages:
             if current_stream_time - self.last_spike_time >= self.cooldown_seconds:
                 is_spike = True
                 self.last_spike_time = current_stream_time
@@ -538,6 +539,12 @@ def main():
         help="Minimum messages in a 10s bucket to qualify as a spike. Default: 5",
     )
     parser.add_argument(
+        "--multiplier",
+        type=float,
+        default=1.75,
+        help="Multiplier over rolling median to trigger spike (default: 1.75)",
+    )
+    parser.add_argument(
         "--quality",
         default="best",
         help="Streamlink stream quality (default: best)",
@@ -594,7 +601,7 @@ def main():
     print("=" * 70)
     print(f" Platform         : {target_info['platform'].upper()}")
     print(f" Target Stream    : {target_info['stream_url']}")
-    print(f" Spike Threshold  : >= 2.5x (median of last 3 min) AND >= {args.min_messages} messages")
+    print(f" Spike Threshold  : >= {args.multiplier}x (median of last 3 min) AND >= {args.min_messages} messages")
     print(f" Clip Parameters  : 20s before + 10s after, center-cropped 9:16")
     print(f" Subtitles        : Whisper ({args.whisper_model}) -> .srt")
     print(f" Output Folders   : {args.rec_dir}/ (full stream), {args.clips_dir}/ (clips & srt)")
@@ -631,6 +638,7 @@ def main():
         bucket_seconds=10,
         window_minutes=3,
         cooldown_seconds=args.cooldown,
+        multiplier=args.multiplier,
     )
 
     print("[Init] Stabilizing recording & chat (5s)...")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test suite for clip-watcher components:
-1. Spike detection logic (10s buckets, median of last 3 min, 2.5x threshold, min messages).
+1. Spike detection logic (10s buckets, median of last 3 min, 1.75x threshold, min messages).
 2. Cooldown debouncing.
 3. IRC message parsing and anonymous auth formatting.
 4. Center-crop 9:16 aspect ratio filter validation.
@@ -32,7 +32,7 @@ class TestSpikeDetector(unittest.TestCase):
             self.assertFalse(is_spike, f"Bucket {i} should not be a spike")
             if i > 0:
                 self.assertEqual(med, 2.0)
-                # threshold = max(5, 2.5 * 2.0 = 5.0) = 5.0
+                # threshold = max(5, 1.75 * 2.0 = 3.5) = 5.0
                 self.assertEqual(thresh, 5.0)
 
         # Now test a spike: 20 messages in bucket 19
@@ -41,16 +41,32 @@ class TestSpikeDetector(unittest.TestCase):
         self.assertEqual(med, 2.0)
         self.assertEqual(thresh, 5.0)
 
+    def test_multiplier_above_min_messages(self):
+        # Baseline: 4 messages per bucket -> median = 4.0
+        # Threshold should be max(5, 1.75 * 4.0 = 7.0) = 7.0
+        for i in range(18):
+            self.detector.evaluate_bucket(count=4, current_stream_time=i * 10.0)
+
+        # 6 messages: 6 < 7.0 -> not a spike
+        is_spike, med, thresh = self.detector.evaluate_bucket(count=6, current_stream_time=180.0)
+        self.assertFalse(is_spike, "6 messages should not trigger spike (threshold is 7.0)")
+        self.assertEqual(med, 4.0)
+        self.assertEqual(thresh, 7.0)
+
+        # 7 messages (with cooldown passed): 7 >= 7.0 -> spike
+        is_spike, med, thresh = self.detector.evaluate_bucket(count=7, current_stream_time=220.0)
+        self.assertTrue(is_spike, "7 messages should trigger spike (7 >= 1.75 * 4.0 = 7.0)")
+
     def test_min_messages_threshold(self):
         # If chat is completely dead (0 msgs per bucket)
         for i in range(18):
             self.detector.evaluate_bucket(count=0, current_stream_time=i * 10.0)
 
-        # If 3 messages arrive (3 >= 2.5*0, but 3 < min_messages (5))
+        # If 3 messages arrive (3 >= 1.75*0, but 3 < min_messages (5))
         is_spike, med, thresh = self.detector.evaluate_bucket(count=3, current_stream_time=180.0)
         self.assertFalse(is_spike, "3 messages should not trigger spike because min_messages is 5")
 
-        # If 5 messages arrive (5 >= 2.5*0 and 5 >= min_messages)
+        # If 5 messages arrive (5 >= 1.75*0 and 5 >= min_messages)
         is_spike, med, thresh = self.detector.evaluate_bucket(count=5, current_stream_time=190.0)
         self.assertTrue(is_spike, "5 messages should trigger spike when min_messages is 5")
 
