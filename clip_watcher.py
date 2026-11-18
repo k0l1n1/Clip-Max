@@ -379,6 +379,9 @@ class SpikeDetector:
         return is_spike, med, threshold
 
 
+_WHISPER_LOCK = threading.Lock()
+
+
 class ClipProcessor:
     """
     Cuts clips with FFmpeg (20s before + 10s after spike), center-crops to 9:16 vertical,
@@ -512,12 +515,12 @@ class ClipProcessor:
             import whisper
             from whisper.utils import get_writer
 
-            if self._whisper_model is None:
-                self._whisper_model = whisper.load_model(self.whisper_model_name)
-
-            transcription = self._whisper_model.transcribe(str(clip_path))
-            writer = get_writer("srt", str(srt_path.parent))
-            writer(transcription, clip_path.stem)
+            with _WHISPER_LOCK:
+                if self._whisper_model is None:
+                    self._whisper_model = whisper.load_model(self.whisper_model_name)
+                transcription = self._whisper_model.transcribe(str(clip_path))
+                writer = get_writer("srt", str(srt_path.parent))
+                writer(transcription, clip_path.stem)
             self.log(f"📝 [Whisper] Subtitles written successfully: {srt_path.name}")
         except Exception as e:
             self.log(f"[Whisper Error] Transcription failed: {e}")

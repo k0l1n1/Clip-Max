@@ -26,8 +26,9 @@ import time
 import urllib.request
 import webbrowser
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -305,38 +306,226 @@ def get_session_duration(creator_name: str) -> str:
     return f"{total_sec // 60:02d}:{total_sec % 60:02d} long"
 
 
-class WatcherManager:
-    """Manages recording, chat monitoring, creators list, and per-creator clipping."""
+class CreatorSession:
+    """Manages recording, chat monitoring, spike detection and clipping for an individual creator."""
 
-    def __init__(self):
-        self.lock = threading.RLock()
-        self.is_running = False
-        self.is_monitoring_chat = False
-        self.active_creator = ""
-        self.platform = "twitch"
-        self.target_name = ""
+    def __init__(self, name: str, info: dict, manager: "WatcherManager"):
+        self.name = name
+        self.info = info
+        self.manager = manager
+        self.platform = info.get("platform", "twitch")
+        self.handle = info.get("handle", name)
         self.stream_url = ""
         self.youtube_video_id = None
-        self.min_messages = 5
-        self.quality = "720p60,best"
-        self.whisper_model = "tiny"
-        self.cooldown = 30
-        self.chat_listener = None
+        self.is_running = False
+        self.is_monitoring_chat = False
         self.recorder = None
+        self.chat_listener = None
         self.detector = None
         self.clip_processor = None
         self.bucket_history = collections.deque(maxlen=30)
         self.current_live_count = 0
-        self.log_messages = collections.deque(maxlen=60)
-        self.velocity_thread = None
-        self.velocity_thread_running = False
+        self.last_bucket_time = time.time()
+        self.min_messages = 5
+        self.quality = "720p60,best"
+        self.whisper_model = "tiny"
+        self.cooldown = 30
+        self.started_at = None
+
+        self._seed_buckets()
+
+    def _seed_buckets(self):
+        self.bucket_history.clear()
+        now = datetime.datetime.now()
+        for i in range(18):
+            t_bucket = now - datetime.timedelta(seconds=(18 - i) * 10)
+            self.bucket_history.append({
+                "time": t_bucket.strftime("%H:%M:%S"),
+                "stream_time": i * 10,
+                "count": 0,
+                "median": 0.0,
+                "threshold": float(self.min_messages),
+                "is_spike": False,
+            })
+
+    def ensure_chat_listener(self):
+        if self.chat_listener and getattr(self.chat_listener, "running", False):
+            return
+
+        target_info = resolve_stream_target(self.handle or self.name)
+        self.platform = target_info["platform"]
+        self.stream_url = target_info["stream_url"]
+
+        if not self.detector:
+            self.detector = SpikeDetector(
+                min_messages=self.min_messages,
+                bucket_seconds=10,
+                window_minutes=3,
+                cooldown_seconds=self.cooldown,
+                multiplier=2.0,
+            )
+
+        if self.platform == "youtube":
+            yt_id = target_info.get("youtube_video_id")
+            if yt_id:
+                self.youtube_video_id = yt_id
+                self.chat_listener = YouTubeChatListener(video_id=yt_id)
+                self.chat_listener.start()
+                self.is_monitoring_chat = True
+                self.manager.add_log(f"🟢 [YouTube Chat] Connected to live chat ({yt_id}) for {self.name}.")
+            else:
+                self.manager.add_log(f"Selected {self.name}. YouTube live ID will resolve when video stream connects.")
+        else:
+            channel = target_info.get("channel", self.name)
+            self.chat_listener = TwitchIRCListener(channel=channel)
+            self.chat_listener.start()
+            self.is_monitoring_chat = True
+            self.manager.add_log(f"🟢 [Twitch IRC] Connected to #{channel} chat for {self.name}.")
+
+    def start(self, min_messages: int = 5, quality: str = "720p60,best", whisper_model: str = "tiny") -> tuple[bool, str]:
+        if self.is_running and self.recorder and self.recorder.is_alive():
+            return True, f"Recording already running for {self.name}"
+
+        self.ensure_chat_listener()
+        self.min_messages = min_messages
+        self.quality = quality
+        self.whisper_model = whisper_model
+
+        target_info = resolve_stream_target(self.handle or self.name)
+        self.manager.add_log(f"▶️ Starting stream recording for {self.platform.upper()}: {self.stream_url} ({self.name})...")
+
+        self.recorder = StreamRecorder(target_info=target_info, quality=self.quality, rec_dir=REC_DIR)
+        started = self.recorder.start()
+        if not started:
+            self.is_running = False
+            self.manager.add_log(f"Notice: Video stream appears offline for {self.name}, but chat velocity is active.")
+            return True, f"Chat velocity active for {self.name} (stream offline)."
+
+        self.clip_processor = ClipProcessor(
+            rec_path=self.recorder.rec_path,
+            streamer_name=self.name,
+            clips_dir=CLIPS_DIR,
+            whisper_model=self.whisper_model,
+            enable_whisper=True,
+            on_log=self.manager.add_log,
+        )
+        self.is_running = True
+        self.started_at = time.time()
+        return True, f"Started recording stream & tracking chat for {self.name}"
+
+    def stop(self) -> tuple[bool, str]:
+        if not self.is_running:
+            return False, f"Stream recording is not currently running for {self.name}."
+
+        self.is_running = False
+        self.manager.add_log(f"⏹️ Stopping stream recorder for {self.name}...")
+        if self.recorder:
+            self.recorder.stop()
+        if self.clip_processor:
+            self.clip_processor.stop()
+        self.manager.add_log(f"Stream recorder stopped for {self.name}. Chat velocity remains active.")
+        return True, f"Stream recorder stopped for {self.name}."
+
+    def manual_clip(self) -> tuple[bool, str]:
+        if not self.is_running or not self.recorder or not self.recorder.is_alive():
+            return False, f"Stream recording is not active for {self.name}. Click '▶ Start Recording' first."
+
+        stream_time = self.recorder.get_elapsed_stream_time()
+        if stream_time < 3:
+            return False, "Stream has just connected. Please allow ~5 seconds for the video buffer."
+
+        spike_center = max(0.0, stream_time - 5.0)
+        self.manager.add_log(f"✂️ Manual clip triggered for {self.name} at stream time {stream_time:.1f}s! Cutting 30s 9:16 vertical video...")
+        self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
+        return True, f"Manual clip scheduled for {self.name}! 9:16 vertical render will be ready in ~12s."
+
+    def get_elapsed(self) -> float:
+        if self.recorder and self.is_running and self.recorder.is_alive():
+            return self.recorder.get_elapsed_stream_time()
+        return 0.0
+
+    def tick(self, now: float):
+        elapsed_in_bucket = now - self.last_bucket_time
+        if self.chat_listener and hasattr(self.chat_listener, "get_messages_in_interval"):
+            current_msgs = self.chat_listener.get_messages_in_interval(self.last_bucket_time, now)
+        else:
+            current_msgs = 0
+
+        self.current_live_count = current_msgs
+
+        if elapsed_in_bucket >= 10.0:
+            self.last_bucket_time = now
+            count = current_msgs
+            stream_time = self.get_elapsed()
+
+            if self.detector:
+                is_spike, med, threshold = self.detector.evaluate_bucket(count, stream_time)
+            else:
+                med = 0.0
+                threshold = float(self.min_messages)
+                is_spike = count >= threshold
+
+            bucket_entry = {
+                "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                "stream_time": int(stream_time),
+                "count": count,
+                "median": round(med, 1),
+                "threshold": round(threshold, 1),
+                "is_spike": is_spike,
+            }
+            self.bucket_history.append(bucket_entry)
+
+            if is_spike:
+                self.manager.add_log(f"🚨 [{self.name}] CHAT SPIKE! ({count} msgs >= {threshold:.1f} threshold).")
+                if self.is_running and self.recorder and self.recorder.is_alive() and self.clip_processor:
+                    spike_center = max(0.0, stream_time - 5.0)
+                    self.manager.add_log(f"✂️ [{self.name}] Auto-cutting 9:16 vertical clip into clips/{self.name}/...")
+                    self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
+
+
+class WatcherManager:
+    """Manages multi-creator concurrent recording, chat monitoring, and parallel clipping."""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.active_creator = ""
+        self.log_messages = collections.deque(maxlen=100)
         self.live_status = {}
-
-        # Load creators list
         self.creators = self._load_creators()
+        self.sessions = {}
 
-        # Start background live checker thread (polls every 20s non-blocking)
-        threading.Thread(target=self._live_checker_loop, daemon=True).start()
+        # Initialize session for each creator
+        for c_name, c_info in self.creators.items():
+            self.sessions[c_name.lower()] = CreatorSession(c_name, c_info, self)
+
+        # Set first creator active by default
+        if self.creators:
+            first_c = next(iter(self.creators.keys()))
+            self.active_creator = first_c
+            self.sessions[first_c.lower()].ensure_chat_listener()
+
+        # Background thread for chat velocity ticking across all active sessions
+        self.velocity_thread_running = True
+        self.velocity_thread = threading.Thread(
+            target=self._chat_velocity_loop, daemon=True, name="ChatVelocityThread"
+        )
+        self.velocity_thread.start()
+
+        # Background thread for live status checking (every 15s)
+        threading.Thread(target=self._live_checker_loop, daemon=True, name="LiveCheckerThread").start()
+
+    def _chat_velocity_loop(self):
+        while self.velocity_thread_running:
+            time.sleep(1.0)
+            now = time.time()
+            with self.lock:
+                sessions_list = list(self.sessions.values())
+            for session in sessions_list:
+                try:
+                    if session.is_monitoring_chat or session.is_running:
+                        session.tick(now)
+                except Exception as e:
+                    print(f"[Velocity Loop Error] {session.name}: {e}")
 
     def _live_checker_loop(self):
         """Continuously checks live status of creators in the background using ThreadPool."""
@@ -344,10 +533,12 @@ class WatcherManager:
 
         def check_single_creator(item):
             c_name, info = item
-            plat = (info.get("platform") or "twitch").lower()
-            if self.is_running and self.target_name.lower() == c_name.lower():
+            # If session is actively recording, creator is live
+            s = self.sessions.get(c_name.lower())
+            if s and s.is_running and s.recorder and s.recorder.is_alive():
                 return c_name.lower(), True
 
+            plat = (info.get("platform") or "twitch").lower()
             if plat == "twitch" or ("youtube" not in c_name.lower() and "mrbeast" not in c_name.lower()):
                 try:
                     url = f"https://decapi.me/twitch/uptime/{c_name}"
@@ -377,7 +568,8 @@ class WatcherManager:
     def is_creator_live(self, c_name: str, platform: str = "twitch") -> bool:
         """Returns whether creator is currently broadcasting live."""
         with self.lock:
-            if self.is_running and self.target_name.lower() == c_name.lower():
+            s = self.sessions.get(c_name.lower())
+            if s and s.is_running and s.recorder and s.recorder.is_alive():
                 return True
         return self.live_status.get(c_name.lower(), False)
 
@@ -414,7 +606,6 @@ class WatcherManager:
             if not clean_name:
                 return False, "Creator name cannot be empty."
 
-            # Ensure per-streamer folder exists in clips/
             creator_folder = CLIPS_DIR / clean_name
             creator_folder.mkdir(parents=True, exist_ok=True)
 
@@ -424,13 +615,15 @@ class WatcherManager:
                 else:
                     avatar = f"https://unavatar.io/twitch/{clean_name}"
 
-            self.creators[clean_name] = {
+            info = {
                 "name": clean_name,
                 "platform": platform,
                 "handle": handle.strip(),
                 "avatar": avatar,
             }
+            self.creators[clean_name] = info
             self._save_creators()
+            self.sessions[clean_name.lower()] = CreatorSession(clean_name, info, self)
             self.add_log(f"Added creator '{clean_name}' (clips/{clean_name}/)")
             return True, f"Creator '{clean_name}' added successfully."
 
@@ -440,9 +633,11 @@ class WatcherManager:
             if clean_name not in self.creators:
                 return False, f"Creator '{clean_name}' not found."
 
-            # If this creator is currently running, stop watcher first
-            if self.is_running and self.target_name == clean_name:
-                self.stop()
+            s = self.sessions.get(clean_name.lower())
+            if s and s.is_running:
+                s.stop()
+            if clean_name.lower() in self.sessions:
+                del self.sessions[clean_name.lower()]
 
             del self.creators[clean_name]
             self._save_creators()
@@ -462,7 +657,6 @@ class WatcherManager:
                 return False, "Streamer name cannot be empty."
 
             deleted_count = 0
-            # 1. Clean out all files in clips/<clean_name>/
             creator_folder = CLIPS_DIR / clean_name
             if creator_folder.exists() and creator_folder.is_dir():
                 for f in list(creator_folder.iterdir()):
@@ -473,7 +667,6 @@ class WatcherManager:
                         except Exception as e:
                             print(f"Error removing {f}: {e}")
 
-            # 2. Also clean any loose clips matching clean_name in CLIPS_DIR
             for f in CLIPS_DIR.glob(f"{clean_name}*"):
                 if f.is_file():
                     try:
@@ -513,210 +706,97 @@ class WatcherManager:
         with self.lock:
             self.log_messages.append(f"[{now_str}] {text}")
 
+    def get_session(self, name_or_target: str) -> CreatorSession:
+        with self.lock:
+            key = name_or_target.lower().strip()
+            if key in self.sessions:
+                return self.sessions[key]
+
+            for c_name, c_info in self.creators.items():
+                if c_name.lower() == key or c_info.get("handle", "").lower() == key or key in c_info.get("handle", "").lower():
+                    if c_name.lower() not in self.sessions:
+                        self.sessions[c_name.lower()] = CreatorSession(c_name, c_info, self)
+                    return self.sessions[c_name.lower()]
+
+            target_info = resolve_stream_target(name_or_target)
+            disp_name = target_info["display_name"]
+            if disp_name.lower() not in self.sessions:
+                info = {
+                    "name": disp_name,
+                    "platform": target_info["platform"],
+                    "handle": target_info["stream_url"],
+                    "avatar": f"https://unavatar.io/twitch/{disp_name}" if target_info["platform"] == "twitch" else "/static/avatars/ishowspeed.png",
+                }
+                self.creators[disp_name] = info
+                self._save_creators()
+                self.sessions[disp_name.lower()] = CreatorSession(disp_name, info, self)
+            return self.sessions[disp_name.lower()]
+
     def set_active_creator(self, name_or_target: str):
         with self.lock:
-            # Match in self.creators
-            target_info = None
-            matched_name = None
-            for c_name, c_info in self.creators.items():
-                if c_name.lower() == name_or_target.lower() or c_info.get("handle", "").lower() == name_or_target.lower():
-                    matched_name = c_name
-                    target_info = resolve_stream_target(c_info.get("handle") or c_name)
-                    break
-
-            if not target_info:
-                target_info = resolve_stream_target(name_or_target)
-                matched_name = target_info["display_name"]
-
-            # If already monitoring this creator and listener is active, do not restart
-            if (
-                self.active_creator == matched_name
-                and self.chat_listener
-                and getattr(self.chat_listener, "running", False)
-            ):
-                return True, f"Already monitoring chat for {matched_name}"
-
-            self.active_creator = matched_name
-            self.target_name = matched_name
-            self.platform = target_info["platform"]
-            self.stream_url = target_info["stream_url"]
-
-            # Stop old chat listener if running
-            if self.chat_listener:
-                try:
-                    self.chat_listener.stop()
-                except Exception:
-                    pass
-                self.chat_listener = None
-
-            # Seed 18 baseline buckets so chart renders active timestamps and lines immediately
-            self.bucket_history.clear()
-            now = datetime.datetime.now()
-            for i in range(18):
-                t_bucket = now - datetime.timedelta(seconds=(18 - i) * 10)
-                self.bucket_history.append({
-                    "time": t_bucket.strftime("%H:%M:%S"),
-                    "stream_time": i * 10,
-                    "count": 0,
-                    "median": 0.0,
-                    "threshold": float(self.min_messages),
-                    "is_spike": False,
-                })
-
-            self.detector = SpikeDetector(
-                min_messages=self.min_messages,
-                bucket_seconds=10,
-                window_minutes=3,
-                cooldown_seconds=self.cooldown,
-                multiplier=2.0,
-            )
-
-            # Connect chat listener
-            if self.platform == "youtube":
-                yt_id = target_info.get("youtube_video_id")
-                if yt_id:
-                    self.youtube_video_id = yt_id
-                    self.chat_listener = YouTubeChatListener(video_id=yt_id)
-                    self.chat_listener.start()
-                    self.add_log(f"🟢 [YouTube Chat] Connected to live chat ({yt_id}) for {matched_name}.")
-                else:
-                    self.add_log(f"Selected {matched_name}. YouTube live ID will resolve when video is loaded.")
-            else:
-                channel = target_info.get("channel", matched_name)
-                self.chat_listener = TwitchIRCListener(channel=channel)
-                self.chat_listener.start()
-                self.add_log(f"🟢 [Twitch IRC] Connected to #{channel} chat for {matched_name}.")
-
-            self.is_monitoring_chat = True
-            self._ensure_velocity_thread()
-            return True, f"Now monitoring chat velocity for {matched_name}"
-
-    def _ensure_velocity_thread(self):
-        if self.velocity_thread is None or not self.velocity_thread.is_alive():
-            self.velocity_thread_running = True
-            self.velocity_thread = threading.Thread(
-                target=self._chat_velocity_loop, daemon=True, name="ChatVelocityThread"
-            )
-            self.velocity_thread.start()
-
-    def _chat_velocity_loop(self):
-        bucket_interval = 10.0
-        last_bucket_time = time.time()
-
-        while self.velocity_thread_running:
-            time.sleep(1.0)
-            now = time.time()
-            elapsed_in_bucket = now - last_bucket_time
-
-            # Read live message count in the current in-progress 10s interval
-            if self.chat_listener and hasattr(self.chat_listener, "get_messages_in_interval"):
-                current_msgs = self.chat_listener.get_messages_in_interval(last_bucket_time, now)
-            else:
-                current_msgs = 0
-
-            with self.lock:
-                self.current_live_count = current_msgs
-
-            if elapsed_in_bucket >= bucket_interval:
-                bucket_start = last_bucket_time
-                bucket_end = now
-                last_bucket_time = now
-
-                count = current_msgs
-                stream_time = (
-                    self.recorder.get_elapsed_stream_time()
-                    if (self.recorder and self.is_running and self.recorder.is_alive())
-                    else 0.0
-                )
-
-                if self.detector:
-                    is_spike, med, threshold = self.detector.evaluate_bucket(count, stream_time)
-                else:
-                    med = 0.0
-                    threshold = float(self.min_messages)
-                    is_spike = count >= threshold
-
-                bucket_entry = {
-                    "time": datetime.datetime.now().strftime("%H:%M:%S"),
-                    "stream_time": int(stream_time),
-                    "count": count,
-                    "median": round(med, 1),
-                    "threshold": round(threshold, 1),
-                    "is_spike": is_spike,
-                }
-
-                with self.lock:
-                    self.bucket_history.append(bucket_entry)
-
-                if is_spike:
-                    self.add_log(f"🚨 CHAT SPIKE! ({count} msgs >= {threshold:.1f} threshold).")
-                    if self.is_running and self.recorder and self.recorder.is_alive() and self.clip_processor:
-                        spike_center = max(0.0, stream_time - 5.0)
-                        self.add_log(f"Auto-cutting 9:16 vertical clip into clips/{self.target_name}/...")
-                        self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
+            session = self.get_session(name_or_target)
+            self.active_creator = session.name
+            session.ensure_chat_listener()
+            return True, f"Now monitoring chat for {session.name}"
 
     def start(self, target: str, min_messages: int = 5, quality: str = "720p60,best", whisper_model: str = "tiny"):
         with self.lock:
-            # Set active creator and ensure chat monitoring is active
-            self.set_active_creator(target)
-            self.min_messages = min_messages
-            self.quality = quality
-            self.whisper_model = whisper_model
+            session = self.get_session(target)
+            self.active_creator = session.name
+            return session.start(min_messages=min_messages, quality=quality, whisper_model=whisper_model)
 
-            target_info = resolve_stream_target(target)
-            self.add_log(f"Starting video stream recording for {self.platform.upper()}: {self.stream_url}...")
-
-            # Start Streamlink
-            self.recorder = StreamRecorder(target_info=target_info, quality=self.quality, rec_dir=REC_DIR)
-            started = self.recorder.start()
-            if not started:
-                self.is_running = False
-                self.add_log("Notice: Video stream appears offline, but live chat velocity is actively monitoring.")
-                return True, f"Chat velocity active for {self.target_name} (video stream offline)."
-
-            # Setup Clip Processor with per-creator folder
-            self.clip_processor = ClipProcessor(
-                rec_path=self.recorder.rec_path,
-                streamer_name=self.target_name,
-                clips_dir=CLIPS_DIR,
-                whisper_model=self.whisper_model,
-                enable_whisper=True,
-                on_log=self.add_log,
-            )
-            self.is_running = True
-            return True, f"Started recording stream & tracking chat for {self.target_name}"
-
-    def stop(self):
+    def stop(self, target: Optional[str] = None):
         with self.lock:
-            if not self.is_running:
-                return False, "Stream recording is not currently running."
+            if target:
+                session = self.get_session(target)
+            else:
+                if not self.active_creator:
+                    return False, "No active creator selected."
+                session = self.get_session(self.active_creator)
+            return session.stop()
 
-            self.is_running = False
-            self.add_log("Stopping stream recorder...")
-            if self.recorder:
-                self.recorder.stop()
-            if self.clip_processor:
-                self.clip_processor.stop()
-            self.add_log("Stream recorder stopped. Chat velocity remains active.")
-            return True, "Stream recorder stopped."
-
-    def manual_clip(self):
+    def manual_clip(self, target: Optional[str] = None):
         with self.lock:
-            if not self.is_running or not self.recorder or not self.recorder.is_alive():
-                return False, "Stream recording is not active. Click '▶ Start Recording' on an active live stream first."
-
-            stream_time = self.recorder.get_elapsed_stream_time()
-            if stream_time < 3:
-                return False, "Stream has just connected. Please allow ~5 seconds for the video buffer."
-
-            spike_center = max(0.0, stream_time - 5.0)
-            self.add_log(f"✂️ Manual clip triggered for {self.target_name} at stream time {stream_time:.1f}s! Cutting 30s 9:16 vertical video...")
-            self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
-            return True, f"Manual clip scheduled for {self.target_name}! 9:16 vertical render will be ready in ~12s."
+            if target:
+                session = self.get_session(target)
+            else:
+                if not self.active_creator:
+                    return False, "No active creator selected."
+                session = self.get_session(self.active_creator)
+            return session.manual_clip()
 
     def get_status(self):
         with self.lock:
-            elapsed = self.recorder.get_elapsed_stream_time() if (self.recorder and self.is_running) else 0.0
+            active_session = self.get_session(self.active_creator) if self.active_creator else None
+            recording_sessions = [s for s in self.sessions.values() if s.is_running and s.recorder and s.recorder.is_alive()]
+            recording_names = [s.name for s in recording_sessions]
+
+            if active_session:
+                is_running = bool(active_session.is_running and active_session.recorder and active_session.recorder.is_alive())
+                is_monitoring_chat = active_session.is_monitoring_chat
+                elapsed = active_session.get_elapsed()
+                target_name = active_session.name
+                platform = active_session.platform
+                stream_url = active_session.stream_url
+                youtube_video_id = active_session.youtube_video_id
+                min_messages = active_session.min_messages
+                quality = active_session.quality
+                whisper_model = active_session.whisper_model
+                chart_buckets = list(active_session.bucket_history)
+                current_live_count = active_session.current_live_count
+            else:
+                is_running = False
+                is_monitoring_chat = False
+                elapsed = 0.0
+                target_name = ""
+                platform = "twitch"
+                stream_url = ""
+                youtube_video_id = None
+                min_messages = 5
+                quality = "720p60,best"
+                whisper_model = "tiny"
+                chart_buckets = []
+                current_live_count = 0
 
             # Scan clips directory recursively for per-creator folders
             clips = []
@@ -734,13 +814,10 @@ class WatcherManager:
                         rel_path = f"{c_name}/{mp4.name}"
                         srt_rel = f"{c_name}/{srt_file.name}" if srt_file.exists() else None
 
-                        # Generate eye-catching, audience-attracting headline tailored to the clip
                         headline = generate_eye_catching_title(c_name, mp4.stem, srt_file)
-
                         hash_val = sum(ord(ch) for ch in mp4.name)
                         score = 80 + (hash_val % 15)
                         dur_sec = 15 + (hash_val % 25)
-                        duration_str = f"0:{dur_sec:02d}"
 
                         clips.append({
                             "name": mp4.name,
@@ -752,7 +829,7 @@ class WatcherManager:
                             "srt_url": f"/clips/{srt_rel}" if srt_rel else None,
                             "headline": headline,
                             "score": score,
-                            "duration_str": duration_str,
+                            "duration_str": f"0:{dur_sec:02d}",
                         })
 
             clips.sort(key=lambda c: c["created_at"], reverse=True)
@@ -760,7 +837,9 @@ class WatcherManager:
             # Build creators list
             creators_list = []
             for c_name, info in self.creators.items():
-                is_active = (self.is_running and self.target_name == c_name)
+                s = self.sessions.get(c_name.lower())
+                c_is_recording = bool(s and s.is_running and s.recorder and s.recorder.is_alive())
+                is_active = (self.active_creator.lower() == c_name.lower())
                 is_live = self.is_creator_live(c_name, info.get("platform", "twitch"))
                 creators_list.append({
                     "name": info["name"],
@@ -770,9 +849,10 @@ class WatcherManager:
                     "clip_count": creator_counts.get(c_name, 0),
                     "is_active": is_active,
                     "is_live": is_live,
+                    "is_recording": c_is_recording,
                 })
 
-            # Group into recorded sessions matching the actual stream being recorded
+            # Group into recorded sessions
             sessions = []
             creators_with_clips = sorted(list(set(c["streamer"] for c in clips)))
             for creator_name in creators_with_clips:
@@ -780,13 +860,11 @@ class WatcherManager:
                 c_info = self.creators.get(creator_name, {})
                 c_platform = c_info.get("platform", "twitch")
 
-                # Get real stream reference (title, category, duration, thumbnail)
                 title, category = get_stream_reference_info(creator_name, c_platform)
                 dur_str = get_session_duration(creator_name)
                 thumb = get_session_thumbnail(creator_name)
                 is_live = self.is_creator_live(creator_name, c_platform)
 
-                # Check if full recording file exists in rec/
                 rec_files = sorted(list(REC_DIR.glob(f"{creator_name}_*.mp4")), key=lambda f: f.stat().st_size, reverse=True)
                 rec_url = f"/rec/{rec_files[0].name}" if (rec_files and rec_files[0].stat().st_size > 100000) else (c_clips[0]["url"] if c_clips else "")
 
@@ -801,22 +879,20 @@ class WatcherManager:
                     "clips": c_clips,
                     "recording_url": rec_url,
                     "is_live": is_live,
+                    "is_recording": bool(self.sessions.get(creator_name.lower()) and self.sessions[creator_name.lower()].is_running),
                 })
 
-            # Generate chart buckets: include recent history plus live in-progress entry
-            chart_buckets = list(self.bucket_history)
             if chart_buckets:
                 latest_med = chart_buckets[-1]["median"]
                 latest_thresh = chart_buckets[-1]["threshold"]
             else:
                 latest_med = 0.0
-                latest_thresh = float(self.min_messages)
+                latest_thresh = float(min_messages)
 
-            # In-progress bucket showing live count
             cur_entry = {
                 "time": datetime.datetime.now().strftime("%H:%M:%S"),
                 "stream_time": int(elapsed),
-                "count": self.current_live_count,
+                "count": current_live_count,
                 "median": latest_med,
                 "threshold": latest_thresh,
                 "is_spike": False,
@@ -825,19 +901,21 @@ class WatcherManager:
             full_buckets = chart_buckets + [cur_entry]
 
             return {
-                "is_running": self.is_running,
-                "is_monitoring_chat": self.is_monitoring_chat,
+                "is_running": is_running,
+                "is_monitoring_chat": is_monitoring_chat,
                 "active_creator": self.active_creator,
-                "platform": self.platform,
-                "target_name": self.target_name,
-                "stream_url": self.stream_url,
-                "youtube_video_id": self.youtube_video_id,
-                "min_messages": self.min_messages,
-                "quality": self.quality,
-                "whisper_model": self.whisper_model,
+                "platform": platform,
+                "target_name": target_name,
+                "stream_url": stream_url,
+                "youtube_video_id": youtube_video_id,
+                "min_messages": min_messages,
+                "quality": quality,
+                "whisper_model": whisper_model,
                 "elapsed_seconds": int(elapsed),
                 "bucket_history": full_buckets,
-                "current_live_count": self.current_live_count,
+                "current_live_count": current_live_count,
+                "recording_count": len(recording_sessions),
+                "recording_creators": recording_names,
                 "logs": list(self.log_messages),
                 "creators": creators_list,
                 "clips": clips,
@@ -846,12 +924,6 @@ class WatcherManager:
 
 
 manager = WatcherManager()
-# Boot-start chat velocity on first creator
-try:
-    first_c = next(iter(manager.creators.keys()), "KaiCenat")
-    manager.set_active_creator(first_c)
-except Exception as e:
-    print(f"Error initializing chat monitoring: {e}")
 
 
 class StartRequest(BaseModel):
@@ -885,16 +957,28 @@ def api_start(req: StartRequest):
 
 
 @app.post("/api/stop")
-def api_stop():
-    success, msg = manager.stop()
+async def api_stop(request: Request):
+    target = None
+    try:
+        body = await request.json()
+        target = body.get("target")
+    except Exception:
+        pass
+    success, msg = manager.stop(target=target)
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"status": "ok", "message": msg}
 
 
 @app.post("/api/clip-now")
-def api_clip_now():
-    success, msg = manager.manual_clip()
+async def api_clip_now(request: Request):
+    target = None
+    try:
+        body = await request.json()
+        target = body.get("target")
+    except Exception:
+        pass
+    success, msg = manager.manual_clip(target=target)
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"status": "ok", "message": msg}
@@ -1891,9 +1975,14 @@ def index_page():
       }
     }
 
-    async function stopWatcher() {
+    async function stopWatcher(targetOverride = null) {
+      const target = targetOverride || activeCreator;
       try {
-        await fetch('/api/stop', { method: 'POST' });
+        await fetch('/api/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target: target })
+        });
         pollStatus();
       } catch (err) {
         console.error("Stop watcher error:", err);
@@ -1907,7 +1996,11 @@ def index_page():
       
       try {
         label.textContent = "Requesting Clip...";
-        const res = await fetch('/api/clip-now', { method: 'POST' });
+        const res = await fetch('/api/clip-now', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target: activeCreator })
+        });
         const data = await res.json();
 
         if (!res.ok) {
@@ -2013,7 +2106,7 @@ def index_page():
       allSessionsData = data.sessions || [];
 
       // 1. Home stats update
-      document.getElementById('stat-recording').textContent = data.is_running ? "1" : "0";
+      document.getElementById('stat-recording').textContent = data.recording_count !== undefined ? data.recording_count : (data.is_running ? "1" : "0");
       document.getElementById('stat-clips-today').textContent = allClipsData.length;
       document.getElementById('home-creator-count').textContent = allCreatorsData.length;
       document.getElementById('all-videos-count-badge').textContent = allClipsData.length;
@@ -2025,12 +2118,15 @@ def index_page():
       const timer = document.getElementById('elapsed-timer');
       const liveDot = document.getElementById('player-live-dot');
 
-      if (data.is_running) {
-        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-neutral-900 text-white border border-neutral-700 shadow-sm";
-        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-white animate-ping"></span><span>Recording #${data.target_name}</span>`;
+      const curCreatorObj = allCreatorsData.find(c => c.name.toLowerCase() === (activeCreator || '').toLowerCase());
+      const isCurRecording = curCreatorObj ? curCreatorObj.is_recording : data.is_running;
+
+      if (isCurRecording) {
+        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-red-950/80 text-red-200 border border-red-800 shadow-sm";
+        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-red-500 animate-ping"></span><span class="font-bold">RECORDING #${escapeHtml(activeCreator)}</span>`;
         btnStart.classList.add('hidden');
         btnStop.classList.remove('hidden');
-        liveDot.className = "w-2 h-2 rounded-full bg-white animate-pulse";
+        liveDot.className = "w-2 h-2 rounded-full bg-red-500 animate-pulse";
 
         const hrs = String(Math.floor(data.elapsed_seconds / 3600)).padStart(2, '0');
         const mins = String(Math.floor((data.elapsed_seconds % 3600) / 60)).padStart(2, '0');
@@ -2046,7 +2142,6 @@ def index_page():
       }
 
       // Update streamer live badge
-      const curCreatorObj = allCreatorsData.find(c => c.name === activeCreator);
       const liveBadge = document.getElementById('streamer-live-badge');
       if (liveBadge) {
         if (curCreatorObj && curCreatorObj.is_live) liveBadge.classList.remove('hidden');
@@ -2103,7 +2198,7 @@ def index_page():
       }
 
       container.innerHTML = creators.map(c => {
-        const isSelected = (currentView === 'STREAMER' && activeCreator === c.name);
+        const isSelected = (currentView === 'STREAMER' && (activeCreator || '').toLowerCase() === c.name.toLowerCase());
         const activeClass = isSelected
           ? 'bg-[#27272a] text-white shadow-sm'
           : 'text-neutral-400 hover:text-white hover:bg-[#18181b]';
@@ -2114,20 +2209,27 @@ def index_page():
             <div class="flex items-center gap-2.5 overflow-hidden">
               <div class="relative shrink-0">
                 <img src="${c.avatar}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(c.name)}&background=27272a&color=ffffff'"
-                  class="w-7 h-7 rounded-full object-cover shrink-0 border ${c.is_live ? 'border-red-500 ring-2 ring-red-500/40' : 'border-neutral-800'}" />
-                ${c.is_live ? `
+                  class="w-7 h-7 rounded-full object-cover shrink-0 border ${c.is_recording ? 'border-red-500 ring-2 ring-red-500 animate-pulse' : (c.is_live ? 'border-red-500 ring-2 ring-red-500/40' : 'border-neutral-800')}" />
+                ${c.is_recording ? `
+                  <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-red-500 border border-black rounded-full animate-ping"></span>
+                  <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-red-500 border border-black rounded-full"></span>
+                ` : (c.is_live ? `
                   <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-red-600 border border-black rounded-full animate-ping"></span>
                   <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-red-600 border border-black rounded-full"></span>
-                ` : ''}
+                ` : '')}
               </div>
               <span class="truncate text-xs font-semibold">${escapeHtml(c.name)}</span>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
-              ${c.is_live ? `
+              ${c.is_recording ? `
+                <span class="bg-red-600 text-white font-black text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider shadow-sm animate-pulse flex items-center gap-1" title="Recording & clipping in progress">
+                  <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>REC
+                </span>
+              ` : (c.is_live ? `
                 <span class="bg-[#ef233c] text-white font-black text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider shadow-sm animate-pulse flex items-center gap-1">
                   LIVE
                 </span>
-              ` : ''}
+              ` : '')}
               ${c.clip_count > 0 ? `<span class="text-[10px] font-mono font-bold text-neutral-300 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded-full">${c.clip_count}</span>` : ''}
               <button onclick="event.stopPropagation(); removeCreator('${escapeHtml(c.name)}')"
                 title="Remove creator"
