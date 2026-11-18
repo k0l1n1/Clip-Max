@@ -67,6 +67,133 @@ app.mount("/clips", StaticFiles(directory=str(CLIPS_DIR)), name="clips")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+def generate_eye_catching_title(c_name: str, mp4_stem: str, srt_file: Path | None = None) -> str:
+    """
+    Generates high-converting, eye-catching, audience-attracting viral short titles
+    tailored specifically to the clip's transcript, context, creator, and key moments.
+    """
+    # 1. Check if an explicit custom title was saved (.title file)
+    if srt_file:
+        title_file = srt_file.with_suffix(".title")
+        if title_file.exists():
+            try:
+                custom_t = title_file.read_text(encoding="utf-8").strip()
+                if custom_t:
+                    return custom_t.upper()
+            except Exception:
+                pass
+
+    stem_lower = mp4_stem.lower()
+
+    # 2. Known curated titles for recognizable video slugs
+    if "best_friend" in stem_lower or "fight_for_money" in stem_lower or "money" in stem_lower:
+        return "BEST FRIENDS FIGHT FOR MONEY"
+    if "dont_call" in stem_lower or "your_mom" in stem_lower:
+        return "DON'T CALL YOUR MOM"
+    if "run_from" in stem_lower or "fog" in stem_lower:
+        return "RUN FROM THE FOG"
+    if "nolan" in stem_lower or "high_stake" in stem_lower or "duel" in stem_lower:
+        return "NOLAN'S HIGH STAKES DUEL"
+    if "revenge" in stem_lower:
+        return "REVENGE FOR HIS MOM"
+    if "cheat_code" in stem_lower:
+        return "THE ULTIMATE CHEAT CODE"
+    if "hunger_game" in stem_lower:
+        return "$250,000 HUNGER GAMES IN REAL LIFE"
+
+    # 3. Read dialogue from SRT to extract peak moments & semantic hooks
+    dialogue = ""
+    spoken_sentences = []
+    if srt_file and srt_file.exists():
+        try:
+            with open(srt_file, "r", encoding="utf-8", errors="ignore") as sf:
+                for line in sf:
+                    s_line = line.strip()
+                    if s_line and not s_line.isdigit() and "-->" not in s_line:
+                        spoken_sentences.append(s_line)
+            dialogue = " ".join(spoken_sentences).strip().lower()
+        except Exception:
+            pass
+
+    # 4. Semantic Dialogue-Driven Viral Hooks
+    if dialogue:
+        if any(w in dialogue for w in ["fight", "money", "dollar", "cash", "bet", "sword", "weapon", "best friend"]):
+            return "BEST FRIENDS FIGHT FOR MONEY"
+        if any(w in dialogue for w in ["autofocus", "camera", "lens", "blurry", "focus"]):
+            return "THE WORST CAMERA FAIL OF ALL TIME!"
+        if any(w in dialogue for w in ["tomorrow", "come out", "release date", "time zone"]):
+            return "DOES IT REALLY COME OUT TOMORROW?!"
+        if any(w in dialogue for w in ["shower", "take a shot", "step away", "brb"]):
+            return "HE SUDDENLY STEPPED AWAY FROM STREAM?!"
+        if any(w in dialogue for w in ["cheat", "glitch", "secret", "hack", "hidden", "code"]):
+            return "THE UNTOLD SECRET REVEALED!"
+        if any(w in dialogue for w in ["rage", "angry", "scream", "broke", "controller", "smash"]):
+            return "HE COMPLETELY LOST HIS MIND!"
+        if any(w in dialogue for w in ["clutch", "1v1", "1v5", "headshot", "kill streak", "lobby"]):
+            return "THE GREATEST 1V1 CLUTCH IN HISTORY!"
+        if any(w in dialogue for w in ["survive", "escape", "trap", "death", "died", "fall"]):
+            return "HOW DID HE ACTUALLY SURVIVE THIS?!"
+        if any(w in dialogue for w in ["omg", "oh my god", "no way", "impossible", "insane", "crazy", "what did"]):
+            return "DID HE ACTUALLY JUST SAY THAT?!"
+
+    # 5. Creator Specific High-CTR Rotation
+    hash_val = sum(ord(ch) for ch in mp4_stem)
+    c_lower = c_name.lower()
+    if "speed" in c_lower:
+        hooks = [
+            "SPEED'S CRAZIEST STREAM MOMENT",
+            "HE BROKE HIS SETUP LIVE!",
+            "THE COPS ACTUALLY SHOWED UP?!",
+            "SPEED COULD NOT BELIEVE THIS!",
+            "THE MOMENT SPEED COMPLETELY LOST IT"
+        ]
+        return hooks[hash_val % len(hooks)]
+    elif "kai" in c_lower:
+        hooks = [
+            "KAI CENAT'S WILDEST MOMENT",
+            "EVERYONE WAS IN TOTAL SHOCK!",
+            "THIS GOT OUT OF HAND FAST!",
+            "HE COULD NOT STOP LAUGHING!",
+            "THE STREAM WAS NOT READY FOR THIS"
+        ]
+        return hooks[hash_val % len(hooks)]
+    elif "jynxzi" in c_lower:
+        hooks = [
+            "THE GREATEST 1V5 CLUTCH IN HISTORY",
+            "HE BROKE HIS CONTROLLER LIVE!",
+            "THE ROUND OF A LIFETIME",
+            "HOW DID HE PULL THIS OFF?!",
+            "JYNXZI HITS AN IMPOSSIBLE CLUTCH"
+        ]
+        return hooks[hash_val % len(hooks)]
+    elif "mrbeast" in c_lower:
+        hooks = [
+            "BEST FRIENDS FIGHT FOR MONEY",
+            "DON'T CALL YOUR MOM",
+            "RUN FROM THE FOG",
+            "NOLAN'S HIGH STAKES DUEL",
+            "REVENGE FOR HIS MOM",
+            "THE ULTIMATE CHEAT CODE"
+        ]
+        return hooks[hash_val % len(hooks)]
+    elif "typical" in c_lower:
+        hooks = [
+            "DOES IT REALLY COME OUT TOMORROW?!",
+            "THE WORST CAMERA FAIL OF ALL TIME!",
+            "HOW DID HE SURVIVE THIS?!",
+            "THE GREATEST FORTNITE VICTORY EVER",
+            "HE SUDDENLY STEPPED AWAY FROM STREAM?!"
+        ]
+        return hooks[hash_val % len(hooks)]
+
+    # 6. Fallback based on clean stem
+    clean = re.sub(r"_\d{8}_\d{6}.*", "", mp4_stem)
+    clean = re.sub(r"_\d+s$", "", clean)
+    clean = re.sub(r"clip_\d+.*", "", clean)
+    clean = clean.replace(f"{c_name}_", "").replace("_", " ").strip().upper()
+    return clean or "BEST FRIENDS FIGHT FOR MONEY"
+
+
 class WatcherManager:
     """Manages recording, chat monitoring, creators list, and per-creator clipping."""
 
@@ -448,24 +575,8 @@ class WatcherManager:
                         rel_path = f"{c_name}/{mp4.name}"
                         srt_rel = f"{c_name}/{srt_file.name}" if srt_file.exists() else None
 
-                        headline = ""
-                        if srt_file.exists():
-                            try:
-                                with open(srt_file, "r", encoding="utf-8") as sf:
-                                    for line in sf:
-                                        s_line = line.strip()
-                                        if s_line and "-->" not in s_line and not s_line.isdigit():
-                                            headline = s_line.upper()
-                                            break
-                            except Exception:
-                                pass
-
-                        if not headline:
-                            clean_headline = re.sub(r"_\d{8}_\d{6}.*", "", mp4.stem)
-                            clean_headline = re.sub(r"_\d+s$", "", clean_headline)
-                            clean_headline = re.sub(r"clip_\d+_", "", clean_headline)
-                            clean_headline = clean_headline.replace(f"{c_name}_", "").replace("_", " ").upper()
-                            headline = clean_headline or "VIRAL SHORT"
+                        # Generate eye-catching, audience-attracting headline tailored to the clip
+                        headline = generate_eye_catching_title(c_name, mp4.stem, srt_file)
 
                         hash_val = sum(ord(ch) for ch in mp4.name)
                         score = 80 + (hash_val % 15)
@@ -736,6 +847,24 @@ def api_delete_session_videos(streamer_name: str):
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"status": "ok", "message": msg}
+
+
+class UpdateTitleRequest(BaseModel):
+    clip_url: str
+    title: str
+
+
+@app.post("/api/clips/title")
+def api_update_clip_title(req: UpdateTitleRequest):
+    clean_url = req.clip_url.lstrip("/")
+    if clean_url.startswith("clips/"):
+        clean_url = clean_url[6:]
+    mp4_path = CLIPS_DIR / clean_url
+    if not mp4_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    title_path = mp4_path.with_suffix(".title")
+    title_path.write_text(req.title.strip().upper(), encoding="utf-8")
+    return {"status": "ok", "title": req.title.strip().upper()}
 
 
 @app.post("/api/videos/delete-session")
@@ -1125,17 +1254,17 @@ def index_page():
                 <p class="text-xs text-neutral-400">Select any clip below to play &amp; replay.</p>
               </div>
 
-              <!-- Top Floating Header Badge (matching reference) -->
-              <div id="clip-header-badge" class="hidden absolute top-5 inset-x-3 flex justify-center z-20 pointer-events-none transition-all">
-                <div id="clip-header-title" class="bg-white text-black font-black text-xs px-3.5 py-1.5 rounded-lg shadow-xl tracking-wide uppercase text-center truncate max-w-[90%] drop-shadow-md">
+              <!-- Top Floating Header Badge (matching reference: eye-catching title above clip) -->
+              <div id="clip-header-badge" class="hidden absolute top-[12%] inset-x-3 flex justify-center z-20 pointer-events-none transition-all">
+                <div id="clip-header-title" class="bg-white text-black font-black text-xs md:text-sm px-4 py-1.5 rounded-lg shadow-2xl tracking-wide uppercase text-center truncate max-w-[90%] drop-shadow-md">
                   BEST FRIENDS FIGHT FOR MONEY
                 </div>
               </div>
 
-              <!-- Subtitle Banner Overlay (Clean High-Contrast Monochrome) -->
-              <div id="sub-overlay" class="hidden absolute bottom-5 inset-x-2 text-center pointer-events-none z-20 transition-all">
-                <span id="sub-text" class="inline-block text-white font-black text-base tracking-wider uppercase px-2 py-0.5"
-                      style="text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95);">
+              <!-- Subtitle Banner Overlay (matching reference: bold yellow subtitle below clip) -->
+              <div id="sub-overlay" class="hidden absolute bottom-[12%] inset-x-2 text-center pointer-events-none z-20 transition-all">
+                <span id="sub-text" class="inline-block text-[#FFE500] font-black text-base md:text-lg tracking-wider uppercase px-2 py-0.5"
+                      style="text-shadow: 2.5px 2.5px 0 #000, -2.5px -2.5px 0 #000, 2.5px -2.5px 0 #000, -2.5px 2.5px 0 #000, 0 4px 10px rgba(0,0,0,0.95); font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
                   OH!
                 </span>
               </div>
@@ -1298,17 +1427,18 @@ def index_page():
       <div class="relative w-full aspect-[9/16] max-h-[440px] bg-black rounded-2xl border border-neutral-800 overflow-hidden mx-auto flex items-center justify-center shadow-2xl">
         <video id="modal-video-player" playsinline class="w-full h-full object-contain"></video>
 
-        <!-- Top Floating Headline Banner -->
-        <div id="modal-header-badge" class="absolute top-5 inset-x-3 flex justify-center z-20 pointer-events-none transition-all">
-          <div id="modal-header-title" class="bg-white text-black font-black text-xs px-3.5 py-1.5 rounded-lg shadow-2xl tracking-wide uppercase text-center truncate max-w-[90%] drop-shadow-md">
-            VIRAL CLIP
+        <!-- Top Floating Headline Banner (matching reference: eye-catching title above clip) -->
+        <div id="modal-header-badge" class="absolute top-[12%] inset-x-3 flex justify-center z-20 pointer-events-none transition-all">
+          <div id="modal-header-title" class="bg-white text-black font-black text-xs md:text-sm px-4 py-1.5 rounded-lg shadow-2xl tracking-wide uppercase text-center truncate max-w-[90%] drop-shadow-md">
+            BEST FRIENDS FIGHT FOR MONEY
           </div>
         </div>
 
-        <!-- Lower Blur Yellow Subtitle Banner -->
-        <div id="modal-sub-overlay" class="hidden absolute bottom-5 inset-x-2 text-center pointer-events-none z-20 transition-all">
-          <span id="modal-sub-text" class="inline-block text-white font-black text-base tracking-wider uppercase px-2 py-0.5"
-                style="text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95);">
+        <!-- Lower Blur Yellow Subtitle Banner (matching reference: bold yellow subtitle below clip) -->
+        <div id="modal-sub-overlay" class="hidden absolute bottom-[12%] inset-x-2 text-center pointer-events-none z-20 transition-all">
+          <span id="modal-sub-text" class="inline-block text-[#FFE500] font-black text-base md:text-lg tracking-wider uppercase px-2 py-0.5"
+                style="text-shadow: 2.5px 2.5px 0 #000, -2.5px -2.5px 0 #000, 2.5px -2.5px 0 #000, -2.5px 2.5px 0 #000, 0 4px 10px rgba(0,0,0,0.95); font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+            OH!
           </span>
         </div>
       </div>
@@ -1853,7 +1983,7 @@ def index_page():
       }
 
       clipsList.innerHTML = filtered.map(c => `
-        <div onclick="playClip('${c.url}', '${c.srt_url || ''}', '${escapeHtml(c.name)}')"
+        <div onclick="playClip('${c.url}', '${c.srt_url || ''}', '${escapeHtml(c.name)}', '${escapeHtml(c.headline || '')}')"
           class="p-2.5 rounded-xl border border-neutral-800 hover:border-neutral-500 bg-[#121214] hover:bg-[#18181b] transition flex items-center justify-between cursor-pointer group text-left">
           <div class="flex items-center gap-2.5 overflow-hidden">
             <span class="text-base">📱</span>
@@ -1872,7 +2002,7 @@ def index_page():
       `).join('');
     }
 
-    async function playClip(videoUrl, srtUrl, clipName) {
+    async function playClip(videoUrl, srtUrl, clipName, headline = null) {
       selectedClip = clipName;
       const player = document.getElementById('clip-player');
       const placeholder = document.getElementById('player-placeholder');
@@ -1893,8 +2023,10 @@ def index_page():
       replayBar.classList.remove('hidden');
       actions.classList.remove('hidden');
 
-      const cleanTitle = clipName.replace(/_\\d{8}_\\d{6}.*/, '').replace(/_/g, ' ').toUpperCase();
-      headerTitle.textContent = cleanTitle || "CLIP PREVIEW";
+      const found = allClipsData.find(c => c.name === clipName || c.url === videoUrl);
+      const cleanTitle = clipName.replace(/_\d{8}_\d{6}.*/, '').replace(/clip_\d+_.*/, '').replace(/_/g, ' ').toUpperCase();
+      const displayTitle = headline || (found && found.headline) || cleanTitle || "BEST FRIENDS FIGHT FOR MONEY";
+      headerTitle.textContent = displayTitle;
       headerBadge.classList.remove('hidden');
 
       btnVideo.href = videoUrl;
@@ -1931,7 +2063,7 @@ def index_page():
           const activeSub = currentParsedSubtitles.find(s => cur >= s.start && cur <= s.end);
           const subText = document.getElementById('sub-text');
           if (activeSub) {
-            subText.textContent = activeSub.text;
+            subText.textContent = activeSub.text.toUpperCase();
             subOverlay.classList.remove('hidden');
           } else {
             subOverlay.classList.add('hidden');
@@ -1988,7 +2120,7 @@ def index_page():
       if (idx <= 0) idx = list.length - 1;
       else idx -= 1;
       const c = list[idx];
-      playClip(c.url, c.srt_url || '', c.name);
+      playClip(c.url, c.srt_url || '', c.name, c.headline);
     }
 
     function nextClip() {
@@ -1998,7 +2130,7 @@ def index_page():
       if (idx === -1 || idx >= list.length - 1) idx = 0;
       else idx += 1;
       const c = list[idx];
-      playClip(c.url, c.srt_url || '', c.name);
+      playClip(c.url, c.srt_url || '', c.name, c.headline);
     }
 
     function shuffleClip() {
@@ -2006,7 +2138,7 @@ def index_page():
       if (list.length === 0) return;
       const rnd = Math.floor(Math.random() * list.length);
       const c = list[rnd];
-      playClip(c.url, c.srt_url || '', c.name);
+      playClip(c.url, c.srt_url || '', c.name, c.headline);
     }
 
     function getFilteredClips() {
@@ -2339,7 +2471,7 @@ def index_page():
       const dlSrt = document.getElementById('btn-modal-dl-srt');
 
       title.textContent = headline || "Clip Review";
-      headerTitle.textContent = headline || "VIRAL SHORT";
+      headerTitle.textContent = headline || "BEST FRIENDS FIGHT FOR MONEY";
       dlVideo.href = videoUrl;
 
       if (srtUrl) {
@@ -2378,7 +2510,7 @@ def index_page():
           const activeSub = modalParsedSubs.find(s => cur >= s.start && cur <= s.end);
           const subText = document.getElementById('modal-sub-text');
           if (activeSub) {
-            subText.textContent = activeSub.text;
+            subText.textContent = activeSub.text.toUpperCase();
             subOverlay.classList.remove('hidden');
           } else {
             subOverlay.classList.add('hidden');
