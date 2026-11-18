@@ -12,7 +12,7 @@ Workflow:
     2) Reads live chat in real time:
        - Twitch: Anonymous IRC (irc.chat.twitch.tv:6667, NICK justinfan12345)
        - YouTube: Live Chat stream via pytchat
-    3) Counts messages in 10 s buckets; a spike = 1.75x the median of the last 3 min and >= --min messages.
+    3) Counts messages in 10 s buckets; a spike = 2.0x the median of the last 3 min and >= --min messages.
     4) For each spike, ffmpeg cuts 20 s before + 10 s after into clips/, center-cropped to 9:16.
     5) Whisper writes an .srt for each clip.
 """
@@ -347,10 +347,10 @@ class SpikeDetector:
     """
     Counts chat messages in 10s buckets.
     Maintains a 3-minute sliding window (18 buckets).
-    Detects spike when bucket count >= 1.75 * median(last 3 min) and count >= min_messages.
+    Detects spike when bucket count >= 2.0 * median(last 3 min) and count >= min_messages.
     """
 
-    def __init__(self, min_messages: int = 5, bucket_seconds: int = 10, window_minutes: int = 3, cooldown_seconds: int = 30, multiplier: float = 1.75):
+    def __init__(self, min_messages: int = 5, bucket_seconds: int = 10, window_minutes: int = 3, cooldown_seconds: int = 30, multiplier: float = 2.0):
         self.min_messages = min_messages
         self.bucket_seconds = bucket_seconds
         self.history_size = int((window_minutes * 60) / bucket_seconds)
@@ -541,8 +541,8 @@ def main():
     parser.add_argument(
         "--multiplier",
         type=float,
-        default=1.75,
-        help="Multiplier over rolling median to trigger spike (default: 1.75)",
+        default=2.0,
+        help="Multiplier over rolling median to trigger spike (default: 2.0)",
     )
     parser.add_argument(
         "--quality",
