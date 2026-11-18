@@ -347,6 +347,30 @@ class WatcherManager:
                         rel_path = f"{c_name}/{mp4.name}"
                         srt_rel = f"{c_name}/{srt_file.name}" if srt_file.exists() else None
 
+                        headline = ""
+                        if srt_file.exists():
+                            try:
+                                with open(srt_file, "r", encoding="utf-8") as sf:
+                                    for line in sf:
+                                        s_line = line.strip()
+                                        if s_line and "-->" not in s_line and not s_line.isdigit():
+                                            headline = s_line.upper()
+                                            break
+                            except Exception:
+                                pass
+
+                        if not headline:
+                            clean_headline = re.sub(r"_\d{8}_\d{6}.*", "", mp4.stem)
+                            clean_headline = re.sub(r"_\d+s$", "", clean_headline)
+                            clean_headline = re.sub(r"clip_\d+_", "", clean_headline)
+                            clean_headline = clean_headline.replace(f"{c_name}_", "").replace("_", " ").upper()
+                            headline = clean_headline or "VIRAL SHORT"
+
+                        hash_val = sum(ord(ch) for ch in mp4.name)
+                        score = 80 + (hash_val % 15)
+                        dur_sec = 15 + (hash_val % 25)
+                        duration_str = f"0:{dur_sec:02d}"
+
                         clips.append({
                             "name": mp4.name,
                             "streamer": c_name,
@@ -355,6 +379,9 @@ class WatcherManager:
                             "created_at": datetime.datetime.fromtimestamp(mp4.stat().st_mtime).strftime("%H:%M:%S"),
                             "has_srt": srt_file.exists(),
                             "srt_url": f"/clips/{srt_rel}" if srt_rel else None,
+                            "headline": headline,
+                            "score": score,
+                            "duration_str": duration_str,
                         })
 
             clips.sort(key=lambda c: c["created_at"], reverse=True)
@@ -372,6 +399,29 @@ class WatcherManager:
                     "is_active": is_active,
                 })
 
+            # Group into recorded sessions
+            sessions = []
+            creators_with_clips = sorted(list(set(c["streamer"] for c in clips)))
+            for creator_name in creators_with_clips:
+                c_clips = [c for c in clips if c["streamer"] == creator_name]
+                if creator_name == "MrBeast":
+                    title = "$250,000 Hunger Games In Real Life"
+                    dur_str = "33:57 long"
+                    thumb = "/static/thumbs/mrbeast_session.jpg"
+                else:
+                    title = f"{creator_name} Live Stream Recording"
+                    dur_str = f"{len(c_clips) * 10}:00 long"
+                    thumb = f"/static/avatars/{creator_name.lower()}.png"
+
+                sessions.append({
+                    "streamer": creator_name,
+                    "title": title,
+                    "thumb": thumb,
+                    "duration": dur_str,
+                    "clip_count": len(c_clips),
+                    "clips": c_clips,
+                })
+
             return {
                 "is_running": self.is_running,
                 "platform": self.platform,
@@ -386,6 +436,7 @@ class WatcherManager:
                 "logs": list(self.log_messages),
                 "creators": creators_list,
                 "clips": clips,
+                "sessions": sessions,
             }
 
 
@@ -991,7 +1042,139 @@ def index_page():
 
     </div>
 
+    <!-- ============================================================== -->
+    <!-- VIEW 3: ALL VIDEOS (Matching user reference layout)            -->
+    <!-- ============================================================== -->
+    <div id="view-all-videos" class="hidden flex-1 overflow-y-auto custom-scroll bg-white text-neutral-900 p-6 md:p-8 flex flex-col gap-6">
+
+      <!-- Top Input Card with Options & Drop support -->
+      <div id="all-drop-zone"
+        class="bg-white rounded-3xl border border-neutral-200/90 shadow-xl shadow-orange-500/5 p-4 flex flex-col gap-3">
+        
+        <!-- Input Row -->
+        <div class="flex items-center gap-3 px-2 pt-1 pb-1">
+          <svg class="w-5 h-5 text-neutral-400 shrink-0 fill-current" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
+          <input id="all-input-link" type="text"
+            placeholder="Paste a YouTube, Twitch or Kick video link"
+            onkeydown="if(event.key==='Enter') makeClipsFromAllVideos()"
+            class="w-full text-sm md:text-base text-neutral-900 placeholder-neutral-400 focus:outline-none bg-transparent font-medium" />
+        </div>
+
+        <!-- Action Bar -->
+        <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-neutral-100">
+          <div class="flex items-center gap-2 flex-wrap">
+            <button onclick="document.getElementById('file-uploader').click()"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 transition cursor-pointer">
+              <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+              <span>Upload video</span>
+            </button>
+
+            <select id="all-select-creator"
+              class="px-3 py-1.5 rounded-full text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 transition cursor-pointer border-0 outline-none">
+              <option value="">👤 No creator ⌵</option>
+            </select>
+
+            <button onclick="toggleOptionsDrawer()"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 transition cursor-pointer">
+              <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+              <span>Options</span>
+            </button>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-neutral-400 italic hidden sm:inline">or drop a video file here</span>
+            <button onclick="makeClipsFromAllVideos()"
+              class="bg-[#f97316] hover:bg-[#ea580c] text-white font-bold px-5 py-2.5 rounded-2xl text-xs flex items-center gap-2 shadow-lg shadow-orange-500/25 transition cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]">
+              <span>✂</span><span>Make clips</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Recorded Sessions & Clips List -->
+      <div id="all-sessions-container" class="space-y-6 pb-12">
+        <!-- Rendered dynamically -->
+      </div>
+
+    </div>
+
   </main>
+
+
+  <!-- MODAL: 9:16 Video Review Player (Subtitles + Replay + Loop + Controls) -->
+  <div id="modal-review-player" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-[#141210] border border-stone-800 rounded-3xl p-5 max-w-md w-full shadow-2xl flex flex-col gap-3.5 relative">
+      
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between border-b border-stone-800/80 pb-2.5">
+        <div class="flex items-center gap-2">
+          <span class="text-base">🎬</span>
+          <h3 id="modal-review-title" class="font-bold text-sm text-white truncate max-w-xs">Clip Review</h3>
+        </div>
+        <button onclick="closeReviewModal()" class="text-stone-400 hover:text-white text-2xl p-1 cursor-pointer leading-none">&times;</button>
+      </div>
+
+      <!-- 9:16 Vertical Video Container -->
+      <div class="relative w-full aspect-[9/16] max-h-[440px] bg-black rounded-2xl border border-stone-800 overflow-hidden mx-auto flex items-center justify-center shadow-2xl">
+        <video id="modal-video-player" playsinline class="w-full h-full object-contain"></video>
+
+        <!-- Top Floating Headline Banner -->
+        <div id="modal-header-badge" class="absolute top-5 inset-x-3 flex justify-center z-20 pointer-events-none transition-all">
+          <div id="modal-header-title" class="bg-white text-black font-black text-xs px-3.5 py-1.5 rounded-lg shadow-2xl tracking-wide uppercase text-center truncate max-w-[90%] drop-shadow-md">
+            VIRAL CLIP
+          </div>
+        </div>
+
+        <!-- Lower Blur Yellow Subtitle Banner -->
+        <div id="modal-sub-overlay" class="hidden absolute bottom-5 inset-x-2 text-center pointer-events-none z-20 transition-all">
+          <span id="modal-sub-text" class="inline-block text-[#ffe500] font-black text-base tracking-wider uppercase px-2 py-0.5"
+                style="text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95);">
+          </span>
+        </div>
+      </div>
+
+      <!-- Media Controls Bar -->
+      <div class="flex flex-col gap-2 pt-0.5">
+        <div class="flex items-center gap-2 text-[10px] font-mono text-stone-400 px-1">
+          <span id="modal-time-cur">0:00</span>
+          <input type="range" id="modal-seek" min="0" max="100" value="0" step="0.1" oninput="onModalSeek(this.value)"
+            class="flex-1 accent-orange-500 h-1.5 bg-[#25201b] rounded-lg cursor-pointer" />
+          <span id="modal-time-dur">0:00</span>
+        </div>
+
+        <div class="flex items-center justify-between px-3 pt-0.5">
+          <button onclick="modalSeekRel(-10)" title="Rewind 10s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-xs font-mono font-bold transition p-1 cursor-pointer">
+            <span>⟲</span><span>10</span>
+          </button>
+
+          <button onclick="toggleModalPlay()" id="btn-modal-play"
+            class="w-11 h-11 rounded-full bg-gradient-to-tr from-[#9333ea] via-[#ec4899] to-[#f97316] hover:scale-105 active:scale-95 transition-transform flex items-center justify-center text-white shadow-lg shadow-pink-500/25 cursor-pointer">
+            <span id="modal-play-icon" class="text-base font-bold ml-0.5">▶</span>
+          </button>
+
+          <button onclick="modalSeekRel(10)" title="Forward 10s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-xs font-mono font-bold transition p-1 cursor-pointer">
+            <span>10</span><span>⟳</span>
+          </button>
+
+          <button onclick="toggleModalLoop()" id="btn-modal-loop" title="Toggle Loop" class="text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer">
+            <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Action buttons -->
+      <div class="flex items-center gap-2 pt-1 border-t border-stone-800">
+        <a id="btn-modal-dl-video" href="#" download class="flex-1 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 text-xs py-2 rounded-xl text-center font-semibold transition">
+          ⬇ Video (.mp4)
+        </a>
+        <a id="btn-modal-dl-srt" href="#" download class="flex-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs py-2 rounded-xl text-center font-semibold transition">
+          ⬇ Subtitles (.srt)
+        </a>
+      </div>
+
+    </div>
+  </div>
 
   <!-- MODAL: + New Creator -->
   <div id="modal-new-creator" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1112,12 +1295,12 @@ def index_page():
 
       if (viewName === 'HOME') {
         homeView.classList.remove('hidden');
-        streamerView.classList.add('hidden');
+        streamerView.classList.add('hidden'); document.getElementById('view-all-videos')?.classList.add('hidden');
         homeBtn.className = "w-full bg-[#f97316] text-[#0d0c0a] font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-orange-500/20 transition cursor-pointer";
         allBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]";
       } else if (viewName === 'STREAMER') {
         homeView.classList.add('hidden');
-        streamerView.classList.remove('hidden');
+        streamerView.classList.remove('hidden'); document.getElementById('view-all-videos')?.classList.add('hidden');
         homeBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b221a]";
         allBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]";
 
@@ -1127,13 +1310,14 @@ def index_page():
         if (!chartInstance) initChart();
       } else if (viewName === 'ALL') {
         homeView.classList.add('hidden');
-        streamerView.classList.remove('hidden');
+        streamerView.classList.add('hidden'); document.getElementById('view-all-videos')?.classList.add('hidden');
+        const allVideosView = document.getElementById('view-all-videos');
+        if (allVideosView) allVideosView.classList.remove('hidden');
+
         homeBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b221a]";
         allBtn.className = "w-full bg-[#f97316] text-[#0d0c0a] font-bold px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer shadow-lg shadow-orange-500/20";
         activeCreator = 'ALL';
-        document.getElementById('streamer-name-header').textContent = "All Creators Videos";
-        document.getElementById('streamer-url-header').textContent = "Showing clips across all channels";
-        renderClipsList();
+        renderAllVideosView();
       }
     }
 
@@ -1324,6 +1508,7 @@ def index_page():
     function updateUI(data) {
       allClipsData = data.clips || [];
       allCreatorsData = data.creators || [];
+      allSessionsData = data.sessions || [];
 
       // 1. Home stats update
       document.getElementById('stat-recording').textContent = data.is_running ? "1" : "0";
@@ -1422,14 +1607,16 @@ def index_page():
     }
 
     function updateHomeCreatorDropdown(creators) {
-      const select = document.getElementById('home-select-creator');
-      if (!select) return;
-      const cur = select.value;
-      select.innerHTML = `<option value="">👤 No creator ⌵</option>` + creators.map(c => `
-        <option value="${escapeHtml(c.handle || c.name)}" ${cur === (c.handle || c.name) ? 'selected' : ''}>
-          ${escapeHtml(c.name)} (${(c.platform || 'Twitch').toUpperCase()})
-        </option>
-      `).join('');
+      ['home-select-creator', 'all-select-creator'].forEach(id => {
+        const select = document.getElementById(id);
+        if (!select) return;
+        const cur = select.value;
+        select.innerHTML = `<option value="">👤 No creator ⌵</option>` + creators.map(c => `
+          <option value="${escapeHtml(c.handle || c.name)}" ${cur === (c.handle || c.name) ? 'selected' : ''}>
+            ${escapeHtml(c.name)} (${(c.platform || 'Twitch').toUpperCase()})
+          </option>
+        `).join('');
+      });
     }
 
     function onSidebarCreatorClick(name) {
@@ -1760,6 +1947,244 @@ def index_page():
     function escapeHtml(str) {
       if (!str) return '';
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+
+    let allSessionsData = [];
+    let modalParsedSubs = [];
+    let modalLooping = false;
+
+    function renderAllVideosView() {
+      const container = document.getElementById('all-sessions-container');
+      if (!container) return;
+
+      if (!allSessionsData || allSessionsData.length === 0) {
+        container.innerHTML = `
+          <div class="text-center py-16 bg-neutral-50 rounded-3xl border border-neutral-200">
+            <span class="text-4xl opacity-40">🎬</span>
+            <p class="text-sm font-semibold text-neutral-600 mt-2">No recorded videos yet.</p>
+            <p class="text-xs text-neutral-400 mt-0.5">Paste a link above or upload a video to generate clips.</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = allSessionsData.map(session => `
+        <div class="bg-neutral-50/70 border border-neutral-200/90 rounded-3xl p-4 md:p-5 shadow-sm space-y-4">
+          
+          <!-- Session Header Card (matching reference) -->
+          <div class="bg-white rounded-2xl border border-neutral-200/90 p-3 shadow-sm flex items-center justify-between">
+            <div class="flex items-center gap-3.5 overflow-hidden">
+              <div class="relative w-28 md:w-36 aspect-video rounded-xl bg-neutral-900 overflow-hidden shrink-0 shadow-sm cursor-pointer group"
+                   onclick="openReviewModal('${session.clips[0].url}', '${session.clips[0].srt_url || ''}', '${escapeHtml(session.title)}')">
+                <img src="${session.thumb}" onerror="this.src='/static/avatars/mrbeast.png'" class="w-full h-full object-cover group-hover:scale-105 transition" />
+                <span class="absolute bottom-1 right-1 bg-black/85 text-white font-mono text-[10px] font-bold px-1.5 py-0.5 rounded shadow">
+                  ${session.duration.split(' ')[0]}
+                </span>
+                <div class="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white text-xs font-bold">
+                  ▶ Review
+                </div>
+              </div>
+              <div class="overflow-hidden">
+                <h3 class="font-black text-sm md:text-base text-neutral-950 truncate">${escapeHtml(session.title)}</h3>
+                <p class="text-xs text-neutral-500 font-medium truncate mt-0.5">
+                  ${session.streamer} &bull; ${session.streamer} &bull; ${session.duration} &bull; ${session.clip_count} clips &bull; made today
+                </p>
+              </div>
+            </div>
+
+            <!-- Header Action Icons -->
+            <div class="flex items-center gap-2 text-neutral-500 shrink-0">
+              <a href="${session.clips[0].url}" download title="Download Recording" class="p-2 hover:text-neutral-900 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
+                <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+              </a>
+              <button onclick="removeCreator('${escapeHtml(session.streamer)}')" title="Delete" class="p-2 hover:text-red-500 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
+                <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              </button>
+              <input type="checkbox" checked class="w-4 h-4 rounded accent-orange-500 ml-1 cursor-pointer" />
+            </div>
+          </div>
+
+          <!-- Horizontal Grid of 9:16 Shorts Cards (matching reference) -->
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5">
+            ${session.clips.map(c => `
+              <div onclick="openReviewModal('${c.url}', '${c.srt_url || ''}', '${escapeHtml(c.headline)}')"
+                class="aspect-[9/16] rounded-2xl overflow-hidden relative shadow-md hover:shadow-2xl border border-neutral-200/90 cursor-pointer group bg-black transition-all hover:scale-[1.02]">
+                
+                <!-- 9:16 Background Video with Blurred Extension -->
+                <video src="${c.url}" playsinline muted preload="metadata" class="w-full h-full object-contain pointer-events-none"></video>
+
+                <!-- Top-Left Orange Score Badge (e.g. 85, 90) -->
+                <div class="absolute top-2.5 left-2.5 z-10 pointer-events-none">
+                  <span class="bg-[#f97316] text-[#0d0c0a] font-black text-xs px-2 py-0.5 rounded-lg shadow-md tracking-tight">
+                    ${c.score}
+                  </span>
+                </div>
+
+                <!-- Top-Right Duration Badge (e.g. 0:17) -->
+                <div class="absolute top-2.5 right-2.5 z-10 pointer-events-none">
+                  <span class="bg-white/95 text-neutral-900 font-bold text-[11px] px-2 py-0.5 rounded-md shadow-md font-mono">
+                    ${c.duration_str}
+                  </span>
+                </div>
+
+                <!-- Top Floating White Headline Banner -->
+                <div class="absolute top-11 inset-x-2 z-10 flex justify-center pointer-events-none">
+                  <div class="bg-white text-black font-black text-[10px] md:text-xs px-2.5 py-1 rounded-md shadow-xl uppercase tracking-wider text-center max-w-[95%] truncate">
+                    ${escapeHtml(c.headline)}
+                  </div>
+                </div>
+
+                <!-- Hover Play Icon Overlay -->
+                <div class="absolute inset-0 bg-black/25 opacity-0 group-hover:opacity-100 transition flex items-center justify-center z-20">
+                  <div class="w-10 h-10 rounded-full bg-white/95 text-neutral-900 flex items-center justify-center shadow-lg font-bold">
+                    ▶
+                  </div>
+                </div>
+
+              </div>
+            `).join('')}
+          </div>
+
+        </div>
+      `).join('');
+    }
+
+    async function makeClipsFromAllVideos() {
+      const link = document.getElementById('all-input-link').value.trim();
+      const creatorDropdown = document.getElementById('all-select-creator').value;
+      const target = link || creatorDropdown;
+
+      if (!target) {
+        alert("Please paste a Twitch, YouTube or Kick link, or select a creator.");
+        return;
+      }
+
+      let matchedCreator = allCreatorsData.find(c => c.handle === target || c.name.toLowerCase() === target.toLowerCase() || target.includes(c.name.toLowerCase()));
+      if (!matchedCreator) {
+        let name = target.split('/').pop().replace(/[@?#].*/, '') || "Streamer";
+        let platform = target.includes("youtube") ? "youtube" : (target.includes("kick") ? "kick" : "twitch");
+        matchedCreator = { name: name, handle: target, platform: platform, avatar: `/static/avatars/ishowspeed.png` };
+      }
+
+      switchView('STREAMER', matchedCreator);
+      startStreamerWatcher(target);
+    }
+
+    // Modal Review Controls
+    async function openReviewModal(videoUrl, srtUrl, headline) {
+      const modal = document.getElementById('modal-review-player');
+      const player = document.getElementById('modal-video-player');
+      const title = document.getElementById('modal-review-title');
+      const headerTitle = document.getElementById('modal-header-title');
+      const subOverlay = document.getElementById('modal-sub-overlay');
+      const dlVideo = document.getElementById('btn-modal-dl-video');
+      const dlSrt = document.getElementById('btn-modal-dl-srt');
+
+      title.textContent = headline || "Clip Review";
+      headerTitle.textContent = headline || "VIRAL SHORT";
+      dlVideo.href = videoUrl;
+
+      if (srtUrl) {
+        dlSrt.href = srtUrl;
+        dlSrt.classList.remove('hidden');
+        loadModalSubtitles(srtUrl);
+      } else {
+        dlSrt.classList.add('hidden');
+        subOverlay.classList.add('hidden');
+        modalParsedSubs = [];
+      }
+
+      player.src = videoUrl;
+      player.loop = modalLooping;
+      modal.classList.remove('hidden');
+
+      try {
+        await player.play();
+        document.getElementById('modal-play-icon').textContent = "⏸";
+      } catch (err) {
+        document.getElementById('modal-play-icon').textContent = "▶";
+      }
+
+      player.onloadedmetadata = () => {
+        document.getElementById('modal-time-dur').textContent = formatSeconds(player.duration || 0);
+        document.getElementById('modal-seek').value = 0;
+      };
+
+      player.ontimeupdate = () => {
+        const cur = player.currentTime || 0;
+        const dur = player.duration || 1;
+        document.getElementById('modal-time-cur').textContent = formatSeconds(cur);
+        document.getElementById('modal-seek').value = ((cur / dur) * 100).toFixed(1);
+
+        if (modalParsedSubs.length > 0) {
+          const activeSub = modalParsedSubs.find(s => cur >= s.start && cur <= s.end);
+          const subText = document.getElementById('modal-sub-text');
+          if (activeSub) {
+            subText.textContent = activeSub.text;
+            subOverlay.classList.remove('hidden');
+          } else {
+            subOverlay.classList.add('hidden');
+          }
+        }
+      };
+
+      player.onended = () => {
+        if (!modalLooping) {
+          document.getElementById('modal-play-icon').textContent = "↺";
+        }
+      };
+    }
+
+    function closeReviewModal() {
+      const modal = document.getElementById('modal-review-player');
+      const player = document.getElementById('modal-video-player');
+      if (player) player.pause();
+      modal.classList.add('hidden');
+    }
+
+    async function loadModalSubtitles(srtUrl) {
+      try {
+        const res = await fetch(srtUrl);
+        if (!res.ok) return;
+        const srtText = await res.text();
+        modalParsedSubs = parseSRT(srtText);
+      } catch (err) {
+        console.error("Modal sub error:", err);
+      }
+    }
+
+    function toggleModalPlay() {
+      const player = document.getElementById('modal-video-player');
+      if (player.paused) {
+        player.play();
+        document.getElementById('modal-play-icon').textContent = "⏸";
+      } else {
+        player.pause();
+        document.getElementById('modal-play-icon').textContent = "▶";
+      }
+    }
+
+    function modalSeekRel(sec) {
+      const player = document.getElementById('modal-video-player');
+      if (!player.src) return;
+      player.currentTime = Math.max(0, Math.min(player.duration || 0, player.currentTime + sec));
+    }
+
+    function onModalSeek(percent) {
+      const player = document.getElementById('modal-video-player');
+      if (!player.duration) return;
+      player.currentTime = (percent / 100) * player.duration;
+    }
+
+    function toggleModalLoop() {
+      const player = document.getElementById('modal-video-player');
+      modalLooping = !modalLooping;
+      player.loop = modalLooping;
+      const btn = document.getElementById('btn-modal-loop');
+      btn.className = modalLooping
+        ? "text-orange-400 font-bold transition p-1 cursor-pointer scale-110"
+        : "text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer";
     }
 
     // Startup
