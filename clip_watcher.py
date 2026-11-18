@@ -59,10 +59,11 @@ def extract_youtube_video_id(url_or_id: str) -> str | None:
 
 def resolve_stream_target(target: str) -> dict:
     """
-    Detects whether target is Twitch or YouTube, resolving URLs and identifiers.
+    Detects whether target is Twitch, YouTube, or Kick, resolving URLs and identifiers.
     """
     t = target.strip()
     is_yt = ("youtube.com" in t) or ("youtu.be" in t) or (extract_youtube_video_id(t) is not None and not t.isalnum())
+    is_kick = ("kick.com" in t)
 
     if is_yt:
         vid_id = extract_youtube_video_id(t)
@@ -80,6 +81,15 @@ def resolve_stream_target(target: str) -> dict:
             "stream_url": stream_url,
             "display_name": display_name,
             "youtube_video_id": vid_id,
+        }
+    elif is_kick:
+        clean = re.sub(r"^https?://(?:www\.)?kick\.com/", "", t, flags=re.IGNORECASE)
+        clean = clean.split("/")[0].lstrip("@").lstrip("#")
+        return {
+            "platform": "kick",
+            "stream_url": f"https://kick.com/{clean}",
+            "display_name": clean,
+            "channel": clean,
         }
     else:
         # Twitch channel
@@ -382,6 +392,7 @@ class ClipProcessor:
         clips_dir: Path = Path("clips"),
         whisper_model: str = "base",
         enable_whisper: bool = True,
+        on_log=None,
     ):
         self.rec_path = rec_path
         self.streamer_name = streamer_name
@@ -389,12 +400,21 @@ class ClipProcessor:
         self.clips_dir.mkdir(parents=True, exist_ok=True)
         self.whisper_model_name = whisper_model
         self.enable_whisper = enable_whisper
+        self.on_log = on_log
         self.work_queue = queue.Queue()
         self.running = True
         self.worker_thread = threading.Thread(target=self._worker, daemon=True, name="ClipProcessorWorker")
         self.worker_thread.start()
         self._whisper_model = None
         self.clip_counter = 0
+
+    def log(self, text: str):
+        print(text)
+        if self.on_log:
+            try:
+                self.on_log(text)
+            except Exception:
+                pass
 
     def schedule_clip(self, spike_stream_time: float, trigger_wall_time: float):
         start_time = max(0.0, spike_stream_time - 20.0)
@@ -404,7 +424,7 @@ class ClipProcessor:
         self.clip_counter += 1
         clip_id = self.clip_counter
 
-        print(f"[Queue] Scheduled Clip #{clip_id} from {start_time:.1f}s to {end_time:.1f}s (duration: {duration:.1f}s)")
+        self.log(f"[Queue] Scheduled Clip #{clip_id} from {start_time:.1f}s to {end_time:.1f}s (duration: {duration:.1f}s)")
         self.work_queue.put({
             "clip_id": clip_id,
             "start_time": start_time,
@@ -477,16 +497,16 @@ class ClipProcessor:
 
         result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode != 0:
-            print(f"[FFmpeg Error] Clip #{clip_id} failed: {result.stderr[-400:]}")
+            self.log(f"[FFmpeg Error] Clip #{clip_id} failed: {result.stderr[-400:]}")
             return
 
-        print(f"[FFmpeg] Clip #{clip_id} generated: {out_clip_path} ({out_clip_path.stat().st_size / (1024*1024):.2f} MB)")
+        self.log(f"✅ [FFmpeg] 9:16 Clip #{clip_id} generated: {out_clip_path.name} ({out_clip_path.stat().st_size / (1024*1024):.2f} MB)")
 
         if self.enable_whisper:
             self._generate_subtitles(out_clip_path, out_srt_path, clip_id)
 
     def _generate_subtitles(self, clip_path: Path, srt_path: Path, clip_id: int):
-        print(f"[Whisper] Transcribing Clip #{clip_id} ({self.whisper_model_name})...")
+        self.log(f"🎙️ [Whisper] Transcribing subtitles for Clip #{clip_id} ({self.whisper_model_name})...")
         try:
             import whisper
             from whisper.utils import get_writer
@@ -497,9 +517,9 @@ class ClipProcessor:
             transcription = self._whisper_model.transcribe(str(clip_path))
             writer = get_writer("srt", str(srt_path.parent))
             writer(transcription, clip_path.stem)
-            print(f"[Whisper] Subtitles written successfully: {srt_path}")
+            self.log(f"📝 [Whisper] Subtitles written successfully: {srt_path.name}")
         except Exception as e:
-            print(f"[Whisper Error] Transcription failed: {e}")
+            self.log(f"[Whisper Error] Transcription failed: {e}")
 
     def stop(self):
         self.running = False

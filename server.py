@@ -25,7 +25,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -221,6 +221,7 @@ class WatcherManager:
                 clips_dir=CLIPS_DIR,
                 whisper_model=self.whisper_model,
                 enable_whisper=True,
+                on_log=self.add_log,
             )
             self.detector = SpikeDetector(
                 min_messages=self.min_messages,
@@ -254,16 +255,16 @@ class WatcherManager:
     def manual_clip(self):
         with self.lock:
             if not self.is_running or not self.recorder:
-                return False, "Watcher must be running to cut a clip."
+                return False, "Watcher is not currently running. Click '▶ Start Watcher' on the live stream first."
 
             stream_time = self.recorder.get_elapsed_stream_time()
-            if stream_time < 5:
-                return False, "Stream has just started, wait at least 5 seconds before clipping."
+            if stream_time < 3:
+                return False, "Stream has just connected. Please allow ~5 seconds for the video buffer."
 
             spike_center = max(0.0, stream_time - 5.0)
-            self.add_log(f"✂️ Manual clip triggered for {self.target_name} at stream time {stream_time:.1f}s!")
+            self.add_log(f"✂️ Manual clip triggered for {self.target_name} at stream time {stream_time:.1f}s! Cutting 30s 9:16 vertical video...")
             self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
-            return True, f"Manual clip scheduled at stream time {stream_time:.1f}s."
+            return True, f"Manual clip scheduled for {self.target_name}! 9:16 vertical render will be ready in ~12s."
 
     def _monitor_loop(self):
         self.add_log("Waiting 5s for recording buffer & chat connection to stabilize...")
@@ -423,6 +424,81 @@ def api_clip_now():
     return {"status": "ok", "message": msg}
 
 
+@app.post("/api/upload-video")
+async def api_upload_video(
+    file: UploadFile = File(...),
+    creator: str = Form("uploads"),
+    whisper_model: str = Form("tiny"),
+):
+    try:
+        clean_creator = creator.strip() or "uploads"
+        target_dir = CLIPS_DIR / clean_creator
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Ensure creator exists in manager
+        if clean_creator not in manager.creators:
+            manager.add_creator(name=clean_creator, handle=clean_creator, platform="upload")
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = re.sub(r"[^a-zA-Z0-9_.-]", "_", file.filename)
+        temp_input = REC_DIR / f"upload_{timestamp}_{safe_filename}"
+
+        content = await file.read()
+        with open(temp_input, "wb") as f:
+            f.write(content)
+
+        base_stem = safe_filename.rsplit(".", 1)[0]
+        out_clip_name = f"{base_stem}_{timestamp}_9_16_blur.mp4"
+        out_clip_path = target_dir / out_clip_name
+        out_srt_path = target_dir / f"{out_clip_name.rsplit('.', 1)[0]}.srt"
+
+        def process_upload():
+            manager.add_log(f"🎬 Processing uploaded video '{file.filename}' into 9:16 vertical shorts with blurred padding...")
+            filter_complex = (
+                "[0:v]scale=270:480:force_original_aspect_ratio=increase,"
+                "crop=270:480,"
+                "boxblur=8:2,"
+                "scale=1080:1920[bg];"
+                "[0:v]scale=1080:-2[fg];"
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2[v]"
+            )
+            cmd = [
+                "ffmpeg", "-y", "-i", str(temp_input),
+                "-filter_complex", filter_complex,
+                "-map", "[v]", "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(out_clip_path),
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res.returncode == 0:
+                manager.add_log(f"✅ Generated 9:16 video: {out_clip_name} ({out_clip_path.stat().st_size / (1024*1024):.2f} MB)")
+                try:
+                    import whisper
+                    from whisper.utils import get_writer
+                    manager.add_log(f"🎙️ Transcribing subtitles with Whisper ({whisper_model})...")
+                    model = whisper.load_model(whisper_model)
+                    transcription = model.transcribe(str(out_clip_path))
+                    writer = get_writer("srt", str(out_srt_path.parent))
+                    writer(transcription, out_clip_path.stem)
+                    manager.add_log(f"📝 Subtitles created: {out_srt_path.name}")
+                except Exception as e:
+                    manager.add_log(f"Whisper transcription error: {e}")
+            else:
+                manager.add_log(f"FFmpeg error on upload: {res.stderr[-200:].decode('utf-8', errors='ignore')}")
+
+        threading.Thread(target=process_upload, daemon=True).start()
+        manager.add_log(f"📥 Received uploaded video: {file.filename}. Starting background 9:16 converter...")
+        return {
+            "status": "ok",
+            "message": f"Processing '{file.filename}' into 9:16 blurred short...",
+            "creator": clean_creator,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/creators")
 def api_add_creator(req: AddCreatorRequest):
     success, msg = manager.add_creator(
@@ -442,342 +518,446 @@ def api_status():
 
 @app.get("/", response_class=HTMLResponse)
 def index_page():
-    html_content = """<!DOCTYPE html>
+    return r"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>clip-watcher Studio</title>
+  <title>Peak Cut - Clip Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body { background-color: #0d0c0b; color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: #0e0d0b; color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     .custom-scroll::-webkit-scrollbar { width: 5px; }
     .custom-scroll::-webkit-scrollbar-thumb { background: #292524; border-radius: 3px; }
+    .hero-radial {
+      background: radial-gradient(ellipse at 50% 25%, rgba(254, 215, 170, 0.45) 0%, rgba(255, 255, 255, 0) 70%);
+    }
   </style>
 </head>
-<body class="min-h-screen flex flex-col">
+<body class="h-screen flex overflow-hidden select-none">
 
-  <!-- Header -->
-  <header class="border-b border-[#221f1c] bg-[#141210]/95 backdrop-blur px-6 py-2.5 flex items-center justify-between sticky top-0 z-50">
-    <div class="flex items-center gap-3">
-      <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center font-bold text-slate-950 shadow-md shadow-orange-500/20 text-base">
-        ⚡
+  <!-- LEFT SIDEBAR: Peak Cut Brand + Creators Hub -->
+  <aside class="w-64 bg-[#140e0a] border-r border-[#241c16] flex flex-col p-3 space-y-3 shrink-0 overflow-y-auto custom-scroll">
+    
+    <!-- Brand Header -->
+    <div class="flex items-center justify-between px-2 pt-1 pb-1">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-xl bg-[#f97316] flex items-center justify-center text-white text-base shadow-md shadow-orange-500/25 font-bold">
+          🐱
+        </div>
+        <span class="font-extrabold text-white text-base tracking-tight">Peak Cut</span>
       </div>
-      <div>
-        <h1 class="font-bold text-sm tracking-wide text-white flex items-center gap-2">
-          <span>clip-watcher Studio</span>
-          <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">9:16 Shorts</span>
-        </h1>
-        <p class="text-[11px] text-stone-400">Twitch &amp; YouTube Live &bull; Real-time Chat Velocity &bull; Whisper Subtitles</p>
-      </div>
+      <button class="text-stone-500 hover:text-stone-300 transition p-1" title="Toggle sidebar">
+        <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8 14H5V7h6v10zm8 0h-6V7h6v10z"/></svg>
+      </button>
     </div>
 
-    <div class="flex items-center gap-3">
-      <div id="status-pill" class="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-mono bg-stone-900 text-stone-400 border border-stone-800">
-        <span class="w-2 h-2 rounded-full bg-stone-600"></span>
-        <span>Idle</span>
-      </div>
-      <span id="elapsed-timer" class="text-xs font-mono text-stone-400">00:00:00</span>
-    </div>
-  </header>
+    <!-- Home Button (Vibrant Orange active) -->
+    <button onclick="switchView('HOME')" id="nav-btn-home"
+      class="w-full bg-[#f97316] hover:bg-[#ea580c] text-[#0d0c0a] font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-orange-500/20 transition cursor-pointer">
+      <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      <span class="text-sm font-bold tracking-tight">Home</span>
+    </button>
 
-  <!-- Controls Bar -->
-  <div class="border-b border-[#221f1c] bg-[#171512] px-6 py-2 flex flex-wrap items-center justify-between gap-3">
-    <div class="flex items-center gap-2.5 flex-wrap">
+    <!-- All Videos Button with Count Badge -->
+    <button onclick="switchView('ALL')" id="nav-btn-all"
+      class="w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]">
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 fill-stone-300" viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+        <span class="font-semibold text-sm">All videos</span>
+      </div>
+      <span id="all-videos-count-badge" class="font-mono text-xs bg-[#392f26] text-stone-200 font-bold px-2.5 py-0.5 rounded-full">0</span>
+    </button>
+
+    <!-- Creators Section -->
+    <div class="pt-2 space-y-2">
+      <div class="px-2 text-[#8b8075] text-xs font-semibold tracking-wide">
+        Creators
+      </div>
+
+      <!-- Dynamic Creators List -->
+      <div id="creators-sidebar-list" class="space-y-1.5">
+        <!-- Populated dynamically via JS -->
+      </div>
+
+      <!-- + New Creator Button -->
+      <button onclick="openNewCreatorModal()"
+        class="w-full text-left px-2.5 py-2.5 rounded-xl text-sm font-semibold text-white hover:bg-[#201a15] transition flex items-center gap-3.5 cursor-pointer group">
+        <div class="w-7 h-7 rounded-full border border-stone-500 flex items-center justify-center text-stone-400 group-hover:border-orange-400 group-hover:text-orange-400 transition">
+          <span class="text-sm font-light leading-none mb-0.5">⊕</span>
+        </div>
+        <span>New creator</span>
+      </button>
+    </div>
+
+  </aside>
+
+  <!-- MAIN VIEW CONTAINER -->
+  <main class="flex-1 flex flex-col overflow-hidden relative">
+
+    <!-- ========================================== -->
+    <!-- VIEW 1: HOME (Exact match to user image) -->
+    <!-- ========================================== -->
+    <div id="view-home" class="flex-1 overflow-y-auto custom-scroll bg-white text-neutral-900 flex flex-col justify-between p-6 md:p-8 relative hero-radial">
       
-      <!-- Input for Twitch channel or YouTube URL -->
-      <div class="relative">
-        <input id="input-target" type="text" placeholder="Enter Twitch channel or YouTube URL..." value=""
-          class="bg-[#0f0e0c] border border-stone-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-orange-500 w-80 font-mono" />
-      </div>
+      <!-- Top Bar: Title & Social Buttons -->
+      <div class="flex items-center justify-between z-10">
+        <div>
+          <h1 class="text-xl md:text-2xl font-black text-neutral-950 tracking-tight">Home</h1>
+          <p class="text-xs md:text-sm text-neutral-500 font-medium">Good morning. <span id="home-creator-count">4</span> creators.</p>
+        </div>
 
-      <div class="flex items-center gap-2 text-xs text-stone-300 bg-[#0f0e0c] px-3 py-1.5 rounded-xl border border-stone-800">
-        <span>Min Spike:</span>
-        <input id="input-min" type="number" min="1" max="100" value="5" class="w-10 bg-transparent font-mono text-orange-400 focus:outline-none" />
-      </div>
-
-      <div class="flex items-center gap-2 text-xs text-stone-300 bg-[#0f0e0c] px-3 py-1.5 rounded-xl border border-stone-800">
-        <span>Quality:</span>
-        <select id="select-quality" class="bg-transparent text-orange-400 focus:outline-none text-xs">
-          <option value="720p60,720p,best">720p60</option>
-          <option value="480p30,480p,best">480p</option>
-          <option value="1080p60,1080p,best">1080p60</option>
-          <option value="best">Best</option>
-        </select>
-      </div>
-
-      <div class="flex items-center gap-2 text-xs text-stone-300 bg-[#0f0e0c] px-3 py-1.5 rounded-xl border border-stone-800">
-        <span>Whisper:</span>
-        <select id="select-model" class="bg-transparent text-amber-400 focus:outline-none text-xs">
-          <option value="tiny">Tiny (Fastest)</option>
-          <option value="base">Base</option>
-          <option value="small">Small</option>
-        </select>
-      </div>
-
-      <button id="btn-start" onclick="startWatcher()" class="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 text-slate-950 font-bold px-4 py-1.5 rounded-xl text-xs shadow-md shadow-orange-500/20 transition cursor-pointer flex items-center gap-1.5">
-        <span>▶ Start Watcher</span>
-      </button>
-
-      <button id="btn-stop" onclick="stopWatcher()" class="hidden bg-red-600 hover:bg-red-500 text-white px-4 py-1.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1.5">
-        <span>⏹ Stop Watcher</span>
-      </button>
-    </div>
-
-    <!-- Manual Clipping Action Button -->
-    <div>
-      <button id="btn-clip-now" onclick="triggerManualClip()" class="bg-stone-800 hover:bg-stone-700 border border-stone-700 text-amber-400 font-bold px-4 py-1.5 rounded-xl text-xs transition flex items-center gap-2 cursor-pointer shadow-sm">
-        <span class="text-sm">✂️</span>
-        <span>Cut Clip Now (Manual)</span>
-      </button>
-    </div>
-  </div>
-
-  <!-- Studio Layout: Sidebar + Main Studio -->
-  <div class="flex-1 flex overflow-hidden">
-
-    <!-- LEFT SIDEBAR: Styled exactly as user reference image -->
-    <aside class="w-64 bg-[#140e0a] border-r border-[#241c16] flex flex-col p-3 space-y-3.5 select-none shrink-0 overflow-y-auto custom-scroll">
-      
-      <!-- Top Action: Home Button (Vibrant Orange with Dark Text & Icon) -->
-      <button onclick="goHome()" id="nav-btn-home"
-        class="w-full bg-[#f97316] hover:bg-[#ea580c] text-[#0d0c0a] font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-orange-500/20 transition cursor-pointer">
-        <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-        <span class="text-sm font-bold tracking-tight">Home</span>
-      </button>
-
-      <!-- Second Action: All Videos Button with Count Badge -->
-      <button onclick="filterByCreator('ALL')" id="nav-btn-all"
-        class="w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]">
         <div class="flex items-center gap-3">
-          <svg class="w-5 h-5 fill-stone-300" viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
-          <span class="font-semibold text-sm">All videos</span>
-        </div>
-        <span id="all-videos-count-badge" class="font-mono text-xs bg-[#392f26] text-stone-200 font-bold px-2.5 py-0.5 rounded-full">0</span>
-      </button>
+          <a href="https://github.com/k0l1n1/Clipper" target="_blank"
+            class="flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-white border border-neutral-200 text-neutral-800 hover:bg-neutral-50 shadow-sm transition">
+            <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            <span>Star on GitHub</span>
+          </a>
 
-      <!-- Section: Creators -->
-      <div class="pt-2 space-y-2">
-        <div class="px-2 text-[#8b8075] text-xs font-semibold tracking-wide">
-          Creators
+          <a href="https://github.com/k0l1n1/Clipper" target="_blank"
+            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold bg-[#f97316] hover:bg-[#ea580c] text-white shadow-md shadow-orange-500/20 transition">
+            <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
+            <span>Follow me</span>
+          </a>
         </div>
-
-        <!-- Dynamic Creators List -->
-        <div id="creators-sidebar-list" class="space-y-1.5">
-          <!-- Populated via JS -->
-        </div>
-
-        <!-- + New Creator Button -->
-        <button onclick="openNewCreatorModal()"
-          class="w-full text-left px-2.5 py-2.5 rounded-xl text-sm font-semibold text-white hover:bg-[#201a15] transition flex items-center gap-3.5 cursor-pointer group">
-          <div class="w-7 h-7 rounded-full border border-stone-500 flex items-center justify-center text-stone-400 group-hover:border-orange-400 group-hover:text-orange-400 transition">
-            <span class="text-sm font-light leading-none mb-0.5">⊕</span>
-          </div>
-          <span>New creator</span>
-        </button>
       </div>
 
-    </aside>
+      <!-- Center Hero: Input & Make Clips -->
+      <div class="my-auto max-w-2xl mx-auto w-full z-10 py-6">
+        <h2 class="text-3xl md:text-4xl font-black text-neutral-950 tracking-tight text-center">
+          What do you want to clip today?
+        </h2>
+        <p class="text-neutral-500 text-xs md:text-sm text-center mt-2 mb-6 font-medium">
+          Paste a link or drop in videos. You get captioned shorts back.
+        </p>
 
-    <!-- MAIN STUDIO AREA -->
-    <main class="flex-1 p-6 grid grid-cols-1 xl:grid-cols-12 gap-6 overflow-y-auto custom-scroll">
-
-      <!-- Left Column: Video & Chat Frequency (7.5 Cols) -->
-      <div class="xl:col-span-8 flex flex-col gap-5">
-        
-        <!-- Live Stream Player -->
-        <div class="bg-[#171512] border border-[#221f1c] rounded-2xl overflow-hidden shadow-xl flex flex-col">
-          <div class="px-4 py-2.5 bg-[#141210] border-b border-[#221f1c] flex items-center justify-between text-xs">
-            <div class="flex items-center gap-2 font-medium text-stone-300">
-              <span id="player-live-dot" class="w-2 h-2 rounded-full bg-stone-600"></span>
-              <span>Live Stream:</span>
-              <span id="player-title" class="font-mono text-stone-400">Standby (No Stream Active)</span>
-              <span id="platform-badge" class="hidden px-2 py-0.5 rounded text-[10px] font-mono bg-orange-500/20 text-orange-400 uppercase">TWITCH</span>
-            </div>
-            <span class="text-stone-500 text-[11px]" id="player-provider-label">Ready</span>
-          </div>
+        <!-- Main Input Card with Drag & Drop -->
+        <div id="drop-zone"
+          class="bg-white rounded-3xl border border-neutral-200/90 shadow-2xl shadow-orange-500/10 p-4 flex flex-col gap-3 transition-all">
           
-          <div class="relative w-full aspect-video bg-black flex items-center justify-center">
-            <div id="stream-placeholder" class="text-center p-8 text-stone-500 flex flex-col items-center gap-2">
-              <span class="text-4xl opacity-30">📺</span>
-              <p class="text-xs text-stone-400">Select a creator from the left or enter a URL above and click <strong class="text-orange-400 font-semibold">▶ Start Watcher</strong>.</p>
-            </div>
-            <iframe id="stream-frame"
-              src=""
-              class="w-full h-full border-0 hidden"
-              allowfullscreen="true">
-            </iframe>
-          </div>
-        </div>
-
-        <!-- Real-Time Chat Frequency Chart -->
-        <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span class="text-base">📈</span>
-              <h3 class="font-semibold text-xs text-stone-200">Chat Velocity (10s Buckets)</h3>
-            </div>
-            <div class="flex items-center gap-3 text-xs font-mono text-[11px]">
-              <div class="flex items-center gap-1">
-                <span class="w-2.5 h-2.5 rounded-sm bg-orange-500"></span>
-                <span class="text-stone-400">Msgs</span>
-              </div>
-              <div class="flex items-center gap-1">
-                <span class="w-3 h-0.5 bg-emerald-400"></span>
-                <span class="text-stone-400">Median</span>
-              </div>
-              <div class="flex items-center gap-1">
-                <span class="w-3 h-0.5 bg-red-500"></span>
-                <span class="text-stone-400">Spike</span>
-              </div>
-            </div>
+          <!-- Input Row -->
+          <div class="flex items-center gap-3 px-2 pt-1 pb-1">
+            <svg class="w-5 h-5 text-neutral-400 shrink-0 fill-current" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
+            <input id="home-input-link" type="text"
+              placeholder="Paste a YouTube, Twitch or Kick video link"
+              onkeydown="if(event.key==='Enter') makeClipsFromHome()"
+              class="w-full text-sm md:text-base text-neutral-900 placeholder-neutral-400 focus:outline-none bg-transparent font-medium" />
           </div>
 
-          <div class="h-40 w-full">
-            <canvas id="chatChart"></canvas>
-          </div>
-        </div>
-
-        <!-- Terminal Activity Log -->
-        <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-3.5 shadow-xl flex flex-col gap-2">
-          <div class="flex items-center justify-between text-xs text-stone-400 border-b border-[#221f1c] pb-1.5">
-            <span class="font-medium text-stone-200">Terminal Activity</span>
-            <span class="font-mono text-[10px] text-stone-500">Auto-scrolling</span>
-          </div>
-          <div id="log-box" class="h-24 overflow-y-auto font-mono text-xs text-stone-300 space-y-1 custom-scroll bg-[#0e0d0b] p-2 rounded-xl border border-stone-800/80">
-            <div class="text-stone-500">[System] Ready to clip. Select a creator to start.</div>
-          </div>
-        </div>
-
-      </div>
-
-      <!-- Right Column: 9:16 Vertical Video Player (4.5 Cols) -->
-      <div class="xl:col-span-4 flex flex-col gap-5">
-
-        <!-- 9:16 Vertical Video Player with Custom Media Controller -->
-        <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
-          <div class="flex items-center justify-between">
-            <h3 class="font-semibold text-xs text-stone-200 flex items-center gap-2">
-              <span>🎬</span>
-              <span>9:16 Vertical Player</span>
-            </h3>
-            <span id="preview-badge" class="text-xs font-mono text-orange-400 truncate max-w-[160px]">Select a clip</span>
-          </div>
-
-          <!-- Vertical Video Container (9:16) -->
-          <div class="relative w-full aspect-[9/16] max-h-[410px] bg-black rounded-2xl border border-stone-800 overflow-hidden mx-auto flex items-center justify-center group shadow-2xl">
-            <video id="clip-player" playsinline class="w-full h-full object-contain hidden"></video>
-
-            <div id="player-placeholder" class="text-center p-6 text-stone-500 flex flex-col items-center gap-2">
-              <span class="text-3xl opacity-30">📱</span>
-              <p class="text-xs text-stone-400">Select any clip below to play &amp; replay.</p>
-            </div>
-
-            <!-- Top Floating Header Badge (matching reference style) -->
-            <div id="clip-header-badge" class="hidden absolute top-6 inset-x-3 flex justify-center z-20 pointer-events-none transition-all">
-              <div id="clip-header-title" class="bg-white text-black font-black text-xs px-3.5 py-1.5 rounded-lg shadow-xl tracking-wide uppercase text-center truncate max-w-[90%] drop-shadow-md">
-                BEST FRIENDS FIGHT FOR MONEY
-              </div>
-            </div>
-
-            <!-- Subtitle Banner Overlay (Bold Yellow with Heavy Black Outline in lower blur area) -->
-            <div id="sub-overlay" class="hidden absolute bottom-6 inset-x-2 text-center pointer-events-none z-20 transition-all">
-              <span id="sub-text" class="inline-block text-[#ffe500] font-black text-base tracking-wider uppercase px-2 py-0.5"
-                    style="text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95);">
-                OH!
-              </span>
-            </div>
-          </div>
-
-          <!-- Full Media Player Controls Bar (Seekbar + Replay/Play/Skip/Loop Buttons) -->
-          <div id="replay-controls" class="hidden flex flex-col gap-2.5 pt-1">
-            
-            <!-- Seekbar & Time Display -->
-            <div class="flex items-center gap-2 text-[10px] font-mono text-stone-400 px-1">
-              <span id="time-current">0:00</span>
-              <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1" oninput="onSeekChange(this.value)"
-                class="flex-1 accent-orange-500 h-1.5 bg-[#25201b] rounded-lg cursor-pointer" />
-              <span id="time-duration">0:00</span>
-            </div>
-
-            <!-- Playback Control Icons matching reference bottom bar -->
-            <div class="flex items-center justify-between px-2 pt-0.5">
+          <!-- Bottom Action Bar -->
+          <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-neutral-100">
+            <div class="flex items-center gap-2 flex-wrap">
               
-              <!-- Shuffle -->
-              <button onclick="shuffleClip()" title="Shuffle Clips" class="text-stone-400 hover:text-white transition p-1 cursor-pointer">
-                <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+              <!-- Upload Video Button -->
+              <input type="file" id="file-uploader" accept="video/*" class="hidden" onchange="handleFileUpload(event)" />
+              <button onclick="document.getElementById('file-uploader').click()"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 transition cursor-pointer">
+                <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+                <span>Upload video</span>
               </button>
 
-              <!-- Previous Clip -->
-              <button onclick="prevClip()" title="Previous Clip" class="text-stone-300 hover:text-white transition p-1 cursor-pointer">
-                <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-              </button>
+              <!-- Creator Selector Dropdown -->
+              <div class="relative">
+                <select id="home-select-creator"
+                  class="px-3 py-1.5 rounded-full text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 transition cursor-pointer border-0 outline-none appearance-none pr-6">
+                  <option value="">👤 No creator ⌵</option>
+                </select>
+              </div>
 
-              <!-- Rewind 10s -->
-              <button onclick="seekRelative(-10)" title="Rewind 10s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
-                <span>⟲</span><span>10</span>
+              <!-- Options Button (Quality, Threshold, Whisper) -->
+              <button onclick="toggleOptionsDrawer()"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 transition cursor-pointer">
+                <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                <span>Options</span>
               </button>
-
-              <!-- Center Glowing Play/Pause Button (Purple-to-Orange Gradient Circle) -->
-              <button onclick="togglePlay()" id="btn-main-play" title="Play/Pause"
-                class="w-11 h-11 rounded-full bg-gradient-to-tr from-[#9333ea] via-[#ec4899] to-[#f97316] hover:scale-105 active:scale-95 transition-transform flex items-center justify-center text-white shadow-lg shadow-pink-500/25 cursor-pointer">
-                <span id="main-play-icon" class="text-base font-bold ml-0.5">▶</span>
-              </button>
-
-              <!-- Forward 30s -->
-              <button onclick="seekRelative(30)" title="Forward 30s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
-                <span>30</span><span>⟳</span>
-              </button>
-
-              <!-- Next Clip -->
-              <button onclick="nextClip()" title="Next Clip" class="text-stone-300 hover:text-white transition p-1 cursor-pointer">
-                <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-              </button>
-
-              <!-- Repeat / Loop Toggle -->
-              <button onclick="toggleLoop()" id="btn-player-loop" title="Toggle Loop" class="text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer">
-                <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-              </button>
-
             </div>
 
-          </div>
-
-          <!-- Download Action Links -->
-          <div id="clip-actions" class="hidden flex items-center justify-between gap-2 pt-1 border-t border-stone-800/80">
-            <a id="btn-download-video" href="#" download class="flex-1 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 text-xs py-1.5 rounded-xl text-center font-medium transition">
-              ⬇ Video (.mp4)
-            </a>
-            <a id="btn-download-srt" href="#" download class="flex-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs py-1.5 rounded-xl text-center font-medium transition">
-              ⬇ Subtitles (.srt)
-            </a>
-          </div>
-        </div>
-
-        <!-- Generated Clips List (Filtered by Creator) -->
-        <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3 flex-1">
-          <div class="flex items-center justify-between border-b border-[#221f1c] pb-2">
-            <div class="flex items-center gap-2">
-              <span>📁</span>
-              <h3 id="clips-heading" class="font-semibold text-xs text-stone-200">Clips</h3>
-              <span id="filtered-count-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-orange-500/20 text-orange-400">0</span>
-            </div>
-            <span id="current-creator-filter-label" class="text-xs font-mono text-orange-400">All Creators</span>
-          </div>
-
-          <div id="clips-list" class="space-y-2 overflow-y-auto max-h-[300px] custom-scroll pr-1">
-            <div class="text-center py-8 text-xs text-stone-500">
-              No clips found.
+            <!-- Make Clips Button -->
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-neutral-400 italic hidden sm:inline">or drop a video file here</span>
+              <button onclick="makeClipsFromHome()"
+                class="bg-[#f97316] hover:bg-[#ea580c] text-white font-bold px-5 py-2.5 rounded-2xl text-xs flex items-center gap-2 shadow-lg shadow-orange-500/25 transition cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]">
+                <span>✂</span><span>Make clips</span>
+              </button>
             </div>
           </div>
+
+          <!-- Options Drawer -->
+          <div id="options-drawer" class="hidden pt-3 border-t border-neutral-100 grid grid-cols-3 gap-3 text-xs">
+            <div class="bg-neutral-50 p-2.5 rounded-xl border border-neutral-200">
+              <span class="block text-neutral-500 font-semibold mb-1">Quality:</span>
+              <select id="home-opt-quality" class="w-full bg-white border border-neutral-200 rounded-lg p-1 font-mono text-neutral-800">
+                <option value="720p60,720p,best">720p60</option>
+                <option value="480p30,480p,best">480p</option>
+                <option value="1080p60,1080p,best">1080p60</option>
+                <option value="best">Best</option>
+              </select>
+            </div>
+            <div class="bg-neutral-50 p-2.5 rounded-xl border border-neutral-200">
+              <span class="block text-neutral-500 font-semibold mb-1">Min Spike:</span>
+              <input id="home-opt-min" type="number" value="5" min="1" max="100" class="w-full bg-white border border-neutral-200 rounded-lg p-1 font-mono text-neutral-800" />
+            </div>
+            <div class="bg-neutral-50 p-2.5 rounded-xl border border-neutral-200">
+              <span class="block text-neutral-500 font-semibold mb-1">Whisper:</span>
+              <select id="home-opt-model" class="w-full bg-white border border-neutral-200 rounded-lg p-1 font-mono text-neutral-800">
+                <option value="tiny">Tiny (Fastest)</option>
+                <option value="base">Base</option>
+                <option value="small">Small</option>
+              </select>
+            </div>
+          </div>
+
         </div>
 
       </div>
 
-    </main>
+      <!-- Bottom 4 Stat Cards Row -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto w-full z-10 pt-4">
+        
+        <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
+          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">((•))</div>
+          <div id="stat-recording" class="text-2xl font-black text-neutral-900">0</div>
+          <div class="text-xs font-semibold text-neutral-400">Recording now</div>
+        </div>
 
-  </div>
+        <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
+          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">✂</div>
+          <div id="stat-clips-today" class="text-2xl font-black text-neutral-900">0</div>
+          <div class="text-xs font-semibold text-neutral-400">Clips today</div>
+        </div>
+
+        <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
+          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">✈</div>
+          <div class="text-2xl font-black text-neutral-900">0</div>
+          <div class="text-xs font-semibold text-neutral-400">Posted today</div>
+        </div>
+
+        <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
+          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">⏱</div>
+          <div class="text-2xl font-black text-neutral-900">0</div>
+          <div class="text-xs font-semibold text-neutral-400">Waiting to post</div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- VIEW 2: STREAMER PROFILE & STUDIO (Live Stream + 9:16 Player) -->
+    <!-- ============================================================== -->
+    <div id="view-streamer" class="hidden flex-1 flex flex-col overflow-hidden bg-[#0d0c0b]">
+
+      <!-- Streamer Profile Header Bar -->
+      <div class="px-6 py-2.5 bg-[#141210] border-b border-[#221f1c] flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-3">
+          <img id="streamer-avatar-header" src="/static/avatars/ishowspeed.png"
+            class="w-9 h-9 rounded-full object-cover border-2 border-orange-500 shadow-md" />
+          <div>
+            <div class="flex items-center gap-2">
+              <h2 id="streamer-name-header" class="text-sm font-bold text-white tracking-wide">Streamer Profile</h2>
+              <span id="streamer-platform-header" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-orange-500/20 text-orange-400 uppercase">TWITCH</span>
+              <div id="streamer-status-pill" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-stone-900 text-stone-400 border border-stone-800">
+                <span class="w-2 h-2 rounded-full bg-stone-600"></span>
+                <span>Standby</span>
+              </div>
+            </div>
+            <p id="streamer-url-header" class="text-[11px] text-stone-400 font-mono truncate max-w-sm">No active stream</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2.5">
+          <!-- Manual Clip Action Button -->
+          <button id="btn-manual-clip-streamer" onclick="triggerManualClip()"
+            class="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 text-slate-950 font-bold px-4 py-1.5 rounded-xl text-xs flex items-center gap-2 cursor-pointer shadow-md shadow-orange-500/25 transition">
+            <span class="text-sm">✂️</span>
+            <span id="label-clip-button">Cut Clip Now (Manual)</span>
+          </button>
+
+          <!-- Start / Stop Watcher -->
+          <button id="btn-streamer-start" onclick="startStreamerWatcher()"
+            class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer">
+            ▶ Start Recording
+          </button>
+          <button id="btn-streamer-stop" onclick="stopWatcher()"
+            class="hidden bg-red-600 hover:bg-red-500 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer">
+            ⏹ Stop Recording
+          </button>
+        </div>
+      </div>
+
+      <!-- Studio Body Grid -->
+      <div class="flex-1 p-6 grid grid-cols-1 xl:grid-cols-12 gap-6 overflow-y-auto custom-scroll">
+
+        <!-- Left Column: Live Stream Player & Chat Frequency (7.5 cols) -->
+        <div class="xl:col-span-8 flex flex-col gap-5">
+          
+          <!-- Stream Video Embed -->
+          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl overflow-hidden shadow-xl flex flex-col">
+            <div class="px-4 py-2 bg-[#141210] border-b border-[#221f1c] flex items-center justify-between text-xs">
+              <span class="text-stone-300 font-medium flex items-center gap-2">
+                <span id="player-live-dot" class="w-2 h-2 rounded-full bg-stone-600"></span>
+                <span>Live Stream Feed</span>
+              </span>
+              <span id="elapsed-timer" class="font-mono text-orange-400 text-xs">00:00:00</span>
+            </div>
+
+            <div class="relative w-full aspect-video bg-black flex items-center justify-center">
+              <div id="stream-placeholder" class="text-center p-8 text-stone-500 flex flex-col items-center gap-2">
+                <span class="text-4xl opacity-30">📺</span>
+                <p class="text-xs text-stone-400">Click <strong class="text-orange-400">▶ Start Recording</strong> above to connect live.</p>
+              </div>
+              <iframe id="stream-frame" src="" class="w-full h-full border-0 hidden" allowfullscreen="true"></iframe>
+            </div>
+          </div>
+
+          <!-- Real-Time Chat Frequency Chart -->
+          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-base">📈</span>
+                <h3 class="font-semibold text-xs text-stone-200">Chat Velocity (10s Buckets)</h3>
+              </div>
+              <div class="flex items-center gap-3 text-xs font-mono text-[11px]">
+                <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-orange-500"></span><span class="text-stone-400">Msgs</span></div>
+                <div class="flex items-center gap-1"><span class="w-3 h-0.5 bg-emerald-400"></span><span class="text-stone-400">Median</span></div>
+                <div class="flex items-center gap-1"><span class="w-3 h-0.5 bg-red-500"></span><span class="text-stone-400">Spike</span></div>
+              </div>
+            </div>
+            <div class="h-40 w-full"><canvas id="chatChart"></canvas></div>
+          </div>
+
+          <!-- Terminal Activity Log -->
+          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-3.5 shadow-xl flex flex-col gap-2">
+            <div class="flex items-center justify-between text-xs text-stone-400 border-b border-[#221f1c] pb-1.5">
+              <span class="font-medium text-stone-200">Activity Log</span>
+              <span class="font-mono text-[10px] text-stone-500">Auto-scrolling</span>
+            </div>
+            <div id="log-box" class="h-24 overflow-y-auto font-mono text-xs text-stone-300 space-y-1 custom-scroll bg-[#0e0d0b] p-2 rounded-xl border border-stone-800/80">
+              <div class="text-stone-500">[System] Studio ready.</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right Column: 9:16 Vertical Video Player (4.5 cols) -->
+        <div class="xl:col-span-4 flex flex-col gap-5">
+          
+          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold text-xs text-stone-200 flex items-center gap-2">
+                <span>🎬</span>
+                <span>9:16 Vertical Player</span>
+              </h3>
+              <span id="preview-badge" class="text-xs font-mono text-orange-400 truncate max-w-[160px]">Select a clip</span>
+            </div>
+
+            <!-- Vertical Video Container (9:16) -->
+            <div class="relative w-full aspect-[9/16] max-h-[400px] bg-black rounded-2xl border border-stone-800 overflow-hidden mx-auto flex items-center justify-center group shadow-2xl">
+              <video id="clip-player" playsinline class="w-full h-full object-contain hidden"></video>
+
+              <div id="player-placeholder" class="text-center p-6 text-stone-500 flex flex-col items-center gap-2">
+                <span class="text-3xl opacity-30">📱</span>
+                <p class="text-xs text-stone-400">Select any clip below to play &amp; replay.</p>
+              </div>
+
+              <!-- Top Floating Header Badge (matching reference) -->
+              <div id="clip-header-badge" class="hidden absolute top-5 inset-x-3 flex justify-center z-20 pointer-events-none transition-all">
+                <div id="clip-header-title" class="bg-white text-black font-black text-xs px-3.5 py-1.5 rounded-lg shadow-xl tracking-wide uppercase text-center truncate max-w-[90%] drop-shadow-md">
+                  BEST FRIENDS FIGHT FOR MONEY
+                </div>
+              </div>
+
+              <!-- Subtitle Banner Overlay (Bold Yellow with Heavy Black Outline in lower blur area) -->
+              <div id="sub-overlay" class="hidden absolute bottom-5 inset-x-2 text-center pointer-events-none z-20 transition-all">
+                <span id="sub-text" class="inline-block text-[#ffe500] font-black text-base tracking-wider uppercase px-2 py-0.5"
+                      style="text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95);">
+                  OH!
+                </span>
+              </div>
+            </div>
+
+            <!-- Full Media Player Controls Bar matching reference -->
+            <div id="replay-controls" class="hidden flex flex-col gap-2 pt-1">
+              
+              <!-- Seekbar & Time Display -->
+              <div class="flex items-center gap-2 text-[10px] font-mono text-stone-400 px-1">
+                <span id="time-current">0:00</span>
+                <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1" oninput="onSeekChange(this.value)"
+                  class="flex-1 accent-orange-500 h-1.5 bg-[#25201b] rounded-lg cursor-pointer" />
+                <span id="time-duration">0:00</span>
+              </div>
+
+              <!-- Playback Control Icons matching reference bottom bar -->
+              <div class="flex items-center justify-between px-2 pt-0.5">
+                <button onclick="shuffleClip()" title="Shuffle" class="text-stone-400 hover:text-white transition p-1 cursor-pointer">
+                  <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+                </button>
+
+                <button onclick="prevClip()" title="Previous" class="text-stone-300 hover:text-white transition p-1 cursor-pointer">
+                  <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                </button>
+
+                <button onclick="seekRelative(-10)" title="Rewind 10s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
+                  <span>⟲</span><span>10</span>
+                </button>
+
+                <!-- Center Glowing Play/Pause Gradient Circle -->
+                <button onclick="togglePlay()" id="btn-main-play" title="Play/Pause"
+                  class="w-11 h-11 rounded-full bg-gradient-to-tr from-[#9333ea] via-[#ec4899] to-[#f97316] hover:scale-105 active:scale-95 transition-transform flex items-center justify-center text-white shadow-lg shadow-pink-500/25 cursor-pointer">
+                  <span id="main-play-icon" class="text-base font-bold ml-0.5">▶</span>
+                </button>
+
+                <button onclick="seekRelative(30)" title="Forward 30s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
+                  <span>30</span><span>⟳</span>
+                </button>
+
+                <button onclick="nextClip()" title="Next" class="text-stone-300 hover:text-white transition p-1 cursor-pointer">
+                  <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                </button>
+
+                <button onclick="toggleLoop()" id="btn-player-loop" title="Toggle Loop" class="text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer">
+                  <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+                </button>
+              </div>
+
+            </div>
+
+            <!-- Download Action Links -->
+            <div id="clip-actions" class="hidden flex items-center justify-between gap-2 pt-1 border-t border-stone-800/80">
+              <a id="btn-download-video" href="#" download class="flex-1 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 text-xs py-1.5 rounded-xl text-center font-medium transition">
+                ⬇ Video (.mp4)
+              </a>
+              <a id="btn-download-srt" href="#" download class="flex-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs py-1.5 rounded-xl text-center font-medium transition">
+                ⬇ Subtitles (.srt)
+              </a>
+            </div>
+
+          </div>
+
+          <!-- Generated Clips List for this Streamer -->
+          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3 flex-1">
+            <div class="flex items-center justify-between border-b border-[#221f1c] pb-2">
+              <div class="flex items-center gap-2">
+                <span>📁</span>
+                <h3 id="clips-heading" class="font-semibold text-xs text-stone-200">Clips</h3>
+                <span id="filtered-count-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-orange-500/20 text-orange-400">0</span>
+              </div>
+              <span id="current-creator-filter-label" class="text-xs font-mono text-orange-400">Creator Clips</span>
+            </div>
+
+            <div id="clips-list" class="space-y-2 overflow-y-auto max-h-[280px] custom-scroll pr-1">
+              <div class="text-center py-8 text-xs text-stone-500">No clips yet for this creator.</div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
 
   <!-- MODAL: + New Creator -->
   <div id="modal-new-creator" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -787,13 +967,13 @@ def index_page():
           <span class="text-orange-400">⊕</span>
           <span>Add New Creator</span>
         </h3>
-        <button onclick="closeNewCreatorModal()" class="text-stone-400 hover:text-white text-lg">&times;</button>
+        <button onclick="closeNewCreatorModal()" class="text-stone-400 hover:text-white text-lg cursor-pointer">&times;</button>
       </div>
 
       <div class="space-y-3">
         <div>
           <label class="block text-xs font-semibold text-stone-300 mb-1">Creator Name:</label>
-          <input id="modal-input-name" type="text" placeholder="e.g. IShowSpeed, KaiCenat, Tarik"
+          <input id="modal-input-name" type="text" placeholder="e.g. Tarik, Pokimane, Shroud"
             class="w-full bg-[#0e0d0b] border border-stone-700 rounded-xl px-3 py-2 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-orange-500" />
         </div>
 
@@ -802,34 +982,39 @@ def index_page():
           <select id="modal-select-platform" class="w-full bg-[#0e0d0b] border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-300 focus:outline-none focus:border-orange-500">
             <option value="twitch">Twitch</option>
             <option value="youtube">YouTube</option>
+            <option value="kick">Kick</option>
           </select>
         </div>
 
         <div>
           <label class="block text-xs font-semibold text-stone-300 mb-1">Channel Handle or URL:</label>
-          <input id="modal-input-handle" type="text" placeholder="e.g. shroud or https://youtube.com/@Channel/live"
+          <input id="modal-input-handle" type="text" placeholder="e.g. tarik or https://kick.com/tarik"
             class="w-full bg-[#0e0d0b] border border-stone-700 rounded-xl px-3 py-2 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-orange-500" />
         </div>
       </div>
 
       <div class="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
-        <button onclick="closeNewCreatorModal()" class="px-4 py-2 rounded-xl text-xs font-medium text-stone-400 hover:text-white transition">Cancel</button>
-        <button onclick="submitNewCreator()" class="bg-[#f97316] hover:bg-[#ea580c] text-slate-950 font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-orange-500/20 transition">Add Creator</button>
+        <button onclick="closeNewCreatorModal()" class="px-4 py-2 rounded-xl text-xs font-medium text-stone-400 hover:text-white transition cursor-pointer">Cancel</button>
+        <button onclick="submitNewCreator()" class="bg-[#f97316] hover:bg-[#ea580c] text-slate-950 font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-orange-500/20 transition cursor-pointer">Add Creator</button>
       </div>
     </div>
   </div>
 
   <script>
+    let currentView = 'HOME';
+    let activeCreator = null;
     let chartInstance = null;
     let selectedClip = null;
-    let activeCreatorFilter = 'ALL';
     let currentParsedSubtitles = [];
     let isLooping = false;
     let allClipsData = [];
     let allCreatorsData = [];
+    let activeWatcherTarget = '';
 
     function initChart() {
-      const ctx = document.getElementById('chatChart').getContext('2d');
+      const canvas = document.getElementById('chatChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
       chartInstance = new Chart(ctx, {
         type: 'bar',
         data: {
@@ -873,23 +1058,222 @@ def index_page():
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          animation: { duration: 300 },
+          animation: { duration: 250 },
           scales: {
-            x: {
-              grid: { color: 'rgba(255, 255, 255, 0.04)' },
-              ticks: { color: '#78716c', font: { size: 10 } }
-            },
-            y: {
-              beginAtZero: true,
-              grid: { color: 'rgba(255, 255, 255, 0.04)' },
-              ticks: { color: '#78716c', font: { size: 10 } }
-            }
+            x: { grid: { color: 'rgba(255, 255, 255, 0.04)' }, ticks: { color: '#78716c', font: { size: 10 } } },
+            y: { beginAtZero: true, grid: { color: 'rgba(255, 255, 255, 0.04)' }, ticks: { color: '#78716c', font: { size: 10 } } }
           },
-          plugins: {
-            legend: { display: false }
-          }
+          plugins: { legend: { display: false } }
         }
       });
+    }
+
+    // View Routing: 'HOME' | 'STREAMER' | 'ALL'
+    function switchView(viewName, creatorData = null) {
+      currentView = viewName;
+      const homeView = document.getElementById('view-home');
+      const streamerView = document.getElementById('view-streamer');
+      const homeBtn = document.getElementById('nav-btn-home');
+      const allBtn = document.getElementById('nav-btn-all');
+
+      if (viewName === 'HOME') {
+        homeView.classList.remove('hidden');
+        streamerView.classList.add('hidden');
+        homeBtn.className = "w-full bg-[#f97316] text-[#0d0c0a] font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-orange-500/20 transition cursor-pointer";
+        allBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]";
+      } else if (viewName === 'STREAMER') {
+        homeView.classList.add('hidden');
+        streamerView.classList.remove('hidden');
+        homeBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b221a]";
+        allBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]";
+
+        if (creatorData) {
+          setupStreamerProfile(creatorData);
+        }
+        if (!chartInstance) initChart();
+      } else if (viewName === 'ALL') {
+        homeView.classList.add('hidden');
+        streamerView.classList.remove('hidden');
+        homeBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b221a]";
+        allBtn.className = "w-full bg-[#f97316] text-[#0d0c0a] font-bold px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer shadow-lg shadow-orange-500/20";
+        activeCreator = 'ALL';
+        document.getElementById('streamer-name-header').textContent = "All Creators Videos";
+        document.getElementById('streamer-url-header').textContent = "Showing clips across all channels";
+        renderClipsList();
+      }
+    }
+
+    function setupStreamerProfile(c) {
+      activeCreator = c.name;
+      activeWatcherTarget = c.handle || c.name;
+
+      document.getElementById('streamer-name-header').textContent = c.name;
+      document.getElementById('streamer-avatar-header').src = c.avatar || `/static/avatars/ishowspeed.png`;
+      document.getElementById('streamer-platform-header').textContent = (c.platform || 'TWITCH').toUpperCase();
+      document.getElementById('streamer-url-header').textContent = c.handle || c.name;
+      document.getElementById('current-creator-filter-label').textContent = `${c.name} Clips`;
+
+      updatePlayerEmbed(c.handle || c.name);
+      renderClipsList();
+    }
+
+    // Home Card Action: Paste link and Click Make Clips -> Redirects to Streamer Profile & Starts
+    async function makeClipsFromHome() {
+      const link = document.getElementById('home-input-link').value.trim();
+      const creatorDropdown = document.getElementById('home-select-creator').value;
+
+      let target = link || creatorDropdown;
+      if (!target) {
+        alert("Please paste a Twitch, YouTube or Kick link, or select a creator.");
+        return;
+      }
+
+      // Find or create creator info
+      let matchedCreator = allCreatorsData.find(c => c.handle === target || c.name.toLowerCase() === target.toLowerCase() || target.includes(c.name.toLowerCase()));
+      if (!matchedCreator) {
+        let name = target.split('/').pop().replace(/[@?#].*/, '') || "Streamer";
+        let platform = target.includes("youtube") ? "youtube" : (target.includes("kick") ? "kick" : "twitch");
+        matchedCreator = { name: name, handle: target, platform: platform, avatar: `/static/avatars/ishowspeed.png` };
+      }
+
+      // 1. Redirect to Streamer View
+      switchView('STREAMER', matchedCreator);
+
+      // 2. Start Watching automatically
+      startStreamerWatcher(target);
+    }
+
+    async function startStreamerWatcher(targetOverride = null) {
+      const target = targetOverride || activeWatcherTarget;
+      if (!target) return;
+
+      const minMsgs = parseInt(document.getElementById('home-opt-min').value) || 5;
+      const quality = document.getElementById('home-opt-quality').value || "720p60,720p,best";
+      const model = document.getElementById('home-opt-model').value || "tiny";
+
+      updatePlayerEmbed(target);
+
+      try {
+        const res = await fetch('/api/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target: target,
+            min_messages: minMsgs,
+            quality: quality,
+            whisper_model: model
+          })
+        });
+        const data = await res.json();
+        pollStatus();
+      } catch (err) {
+        console.error("Start watcher error:", err);
+      }
+    }
+
+    async function stopWatcher() {
+      try {
+        await fetch('/api/stop', { method: 'POST' });
+        pollStatus();
+      } catch (err) {
+        console.error("Stop watcher error:", err);
+      }
+    }
+
+    // Manual Clipping Action: Works with 10s wait buffer feedback
+    async function triggerManualClip() {
+      const btn = document.getElementById('btn-manual-clip-streamer');
+      const label = document.getElementById('label-clip-button');
+      
+      try {
+        label.textContent = "Requesting Clip...";
+        const res = await fetch('/api/clip-now', { method: 'POST' });
+        const data = await res.json();
+
+        if (!res.ok) {
+          alert(data.detail || "Manual clip failed.");
+          label.textContent = "Cut Clip Now (Manual)";
+          return;
+        }
+
+        // Live countdown visual feedback for 12 seconds buffer
+        let countdown = 12;
+        btn.classList.add('animate-pulse');
+        const interval = setInterval(() => {
+          countdown--;
+          if (countdown > 0) {
+            label.textContent = `Rendering 9:16 (${countdown}s buffer)...`;
+          } else {
+            clearInterval(interval);
+            btn.classList.remove('animate-pulse');
+            label.textContent = "✅ Clip Ready!";
+            setTimeout(() => {
+              label.textContent = "Cut Clip Now (Manual)";
+            }, 3000);
+            pollStatus();
+          }
+        }, 1000);
+
+      } catch (err) {
+        alert("Error triggering manual clip: " + err);
+        label.textContent = "Cut Clip Now (Manual)";
+      }
+    }
+
+    // Video File Upload Support (Drag & Drop or File Picker)
+    async function handleFileUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      uploadVideoFile(file);
+    }
+
+    async function uploadVideoFile(file) {
+      const creator = activeCreator && activeCreator !== 'ALL' ? activeCreator : (document.getElementById('home-select-creator').value || "uploads");
+      const model = document.getElementById('home-opt-model').value || "tiny";
+      
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("creator", creator);
+      formData.append("whisper_model", model);
+
+      alert(`Uploading '${file.name}' to creator '${creator}' for 9:16 vertical conversion...`);
+
+      try {
+        const res = await fetch('/api/upload-video', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (res.ok) {
+          switchView('STREAMER', { name: creator, handle: creator, platform: "upload" });
+          pollStatus();
+        } else {
+          alert(`Upload error: ${data.detail || 'Failed'}`);
+        }
+      } catch (err) {
+        alert("Upload network error: " + err);
+      }
+    }
+
+    // Drag and Drop handling on Home Card
+    const dropZone = document.getElementById('drop-zone');
+    if (dropZone) {
+      ['dragenter', 'dragover'].forEach(name => {
+        dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.add('border-orange-500', 'bg-orange-50/20'); });
+      });
+      ['dragleave', 'drop'].forEach(name => {
+        dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.remove('border-orange-500', 'bg-orange-50/20'); });
+      });
+      dropZone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files.length > 0) uploadVideoFile(files[0]);
+      });
+    }
+
+    function toggleOptionsDrawer() {
+      const drawer = document.getElementById('options-drawer');
+      drawer.classList.toggle('hidden');
     }
 
     async function pollStatus() {
@@ -907,26 +1291,24 @@ def index_page():
       allClipsData = data.clips || [];
       allCreatorsData = data.creators || [];
 
-      // 1. Status Pill & Timer
-      const pill = document.getElementById('status-pill');
+      // 1. Home stats update
+      document.getElementById('stat-recording').textContent = data.is_running ? "1" : "0";
+      document.getElementById('stat-clips-today').textContent = allClipsData.length;
+      document.getElementById('home-creator-count').textContent = allCreatorsData.length;
+      document.getElementById('all-videos-count-badge').textContent = allClipsData.length;
+
+      // 2. Streamer header state
+      const streamerPill = document.getElementById('streamer-status-pill');
+      const btnStart = document.getElementById('btn-streamer-start');
+      const btnStop = document.getElementById('btn-streamer-stop');
       const timer = document.getElementById('elapsed-timer');
-      const btnStart = document.getElementById('btn-start');
-      const btnStop = document.getElementById('btn-stop');
-      const platformBadge = document.getElementById('platform-badge');
-      const playerProvider = document.getElementById('player-provider-label');
-      const playerTitle = document.getElementById('player-title');
       const liveDot = document.getElementById('player-live-dot');
 
       if (data.is_running) {
-        pill.className = `flex items-center gap-2 px-3 py-1 rounded-full text-xs font-mono bg-emerald-950 text-emerald-400 border border-emerald-800 shadow-sm shadow-emerald-500/20`;
-        pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span><span>Recording #${data.target_name}</span>`;
+        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-emerald-950 text-emerald-400 border border-emerald-800 shadow-sm shadow-emerald-500/20";
+        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span><span>Recording #${data.target_name}</span>`;
         btnStart.classList.add('hidden');
         btnStop.classList.remove('hidden');
-
-        platformBadge.textContent = data.platform.toUpperCase();
-        platformBadge.classList.remove('hidden');
-        playerProvider.textContent = data.platform === 'youtube' ? 'YouTube Embed' : 'Twitch Embed';
-        playerTitle.textContent = data.target_name;
         liveDot.className = "w-2 h-2 rounded-full bg-red-500 animate-pulse";
 
         const hrs = String(Math.floor(data.elapsed_seconds / 3600)).padStart(2, '0');
@@ -934,61 +1316,53 @@ def index_page():
         const secs = String(data.elapsed_seconds % 60).padStart(2, '0');
         timer.textContent = `${hrs}:${mins}:${secs}`;
       } else {
-        pill.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-mono bg-stone-900 text-stone-400 border border-stone-800";
-        pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-stone-600"></span><span>Idle</span>`;
+        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-stone-900 text-stone-400 border border-stone-800";
+        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-stone-600"></span><span>Standby</span>`;
         btnStart.classList.remove('hidden');
         btnStop.classList.add('hidden');
+        liveDot.className = "w-2 h-2 rounded-full bg-stone-600";
         timer.textContent = "00:00:00";
       }
 
-      // 2. Chart Update
+      // 3. Chart update
       if (chartInstance && data.bucket_history) {
-        const labels = data.bucket_history.map(b => b.time);
-        const counts = data.bucket_history.map(b => b.count);
-        const medians = data.bucket_history.map(b => b.median);
-        const thresholds = data.bucket_history.map(b => b.threshold);
-        const colors = data.bucket_history.map(b => b.is_spike ? 'rgba(239, 68, 68, 0.9)' : 'rgba(249, 115, 22, 0.7)');
-
-        chartInstance.data.labels = labels;
-        chartInstance.data.datasets[0].data = counts;
-        chartInstance.data.datasets[0].backgroundColor = colors;
-        chartInstance.data.datasets[1].data = medians;
-        chartInstance.data.datasets[2].data = thresholds;
+        chartInstance.data.labels = data.bucket_history.map(b => b.time);
+        chartInstance.data.datasets[0].data = data.bucket_history.map(b => b.count);
+        chartInstance.data.datasets[0].backgroundColor = data.bucket_history.map(b => b.is_spike ? 'rgba(239, 68, 68, 0.9)' : 'rgba(249, 115, 22, 0.7)');
+        chartInstance.data.datasets[1].data = data.bucket_history.map(b => b.median);
+        chartInstance.data.datasets[2].data = data.bucket_history.map(b => b.threshold);
         chartInstance.update();
       }
 
-      // 3. Activity Logs
+      // 4. Log Box
       const logBox = document.getElementById('log-box');
       if (data.logs && data.logs.length > 0) {
         logBox.innerHTML = data.logs.map(l => `<div class="leading-relaxed">${escapeHtml(l)}</div>`).join('');
         logBox.scrollTop = logBox.scrollHeight;
       }
 
-      // 4. Update Sidebar: Creators List
-      updateCreatorsSidebar(data.creators || [], data.clips || []);
+      // 5. Sidebar creators list
+      updateSidebarCreators(allCreatorsData);
 
-      // 5. Update Clips Gallery with Current Filter
+      // 6. Home dropdown creator selector
+      updateHomeCreatorDropdown(allCreatorsData);
+
+      // 7. Clips List
       renderClipsList();
     }
 
-    function updateCreatorsSidebar(creators, clips) {
+    function updateSidebarCreators(creators) {
       const container = document.getElementById('creators-sidebar-list');
-      const allVideosBadge = document.getElementById('all-videos-count-badge');
-      allVideosBadge.textContent = clips.length;
-
-      if (!creators || creators.length === 0) {
-        container.innerHTML = `<div class="text-xs text-stone-500 px-3 py-2">No creators yet.</div>`;
-        return;
-      }
+      if (!creators || creators.length === 0) return;
 
       container.innerHTML = creators.map(c => {
-        const isSelected = activeCreatorFilter === c.name;
+        const isSelected = (currentView === 'STREAMER' && activeCreator === c.name);
         const activeClass = isSelected
           ? 'bg-[#28221c] text-white shadow-sm'
           : 'text-stone-300 hover:text-white hover:bg-[#1d1915]';
 
         return `
-          <div onclick="selectCreator('${escapeHtml(c.name)}', '${escapeHtml(c.handle)}')"
+          <div onclick="onSidebarCreatorClick('${escapeHtml(c.name)}')"
             class="flex items-center justify-between px-2.5 py-2 rounded-xl text-sm font-medium transition cursor-pointer group ${activeClass}">
             <div class="flex items-center gap-3 overflow-hidden">
               <img src="${c.avatar}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(c.name)}&background=292524&color=f97316'"
@@ -1001,62 +1375,43 @@ def index_page():
       }).join('');
     }
 
-    function selectCreator(name, handle) {
-      activeCreatorFilter = name;
-      document.getElementById('input-target').value = handle || name;
-      updatePlayerEmbed(handle || name);
-      renderClipsList();
-      highlightActiveNav(name);
+    function updateHomeCreatorDropdown(creators) {
+      const select = document.getElementById('home-select-creator');
+      if (!select) return;
+      const cur = select.value;
+      select.innerHTML = `<option value="">👤 No creator ⌵</option>` + creators.map(c => `
+        <option value="${escapeHtml(c.handle || c.name)}" ${cur === (c.handle || c.name) ? 'selected' : ''}>
+          ${escapeHtml(c.name)} (${(c.platform || 'Twitch').toUpperCase()})
+        </option>
+      `).join('');
     }
 
-    function filterByCreator(creatorName) {
-      activeCreatorFilter = creatorName;
-      renderClipsList();
-      highlightActiveNav(creatorName);
-    }
-
-    function goHome() {
-      activeCreatorFilter = 'ALL';
-      renderClipsList();
-      highlightActiveNav('HOME');
-    }
-
-    function highlightActiveNav(target) {
-      const homeBtn = document.getElementById('nav-btn-home');
-      const allBtn = document.getElementById('nav-btn-all');
-
-      if (target === 'HOME') {
-        homeBtn.className = "w-full bg-[#f97316] text-slate-950 font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-orange-500/20 transition cursor-pointer";
-        allBtn.className = "w-full bg-[#201c18] hover:bg-[#2c2621] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b2723]";
-      } else if (target === 'ALL') {
-        homeBtn.className = "w-full bg-[#201c18] hover:bg-[#2c2621] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b2723]";
-        allBtn.className = "w-full bg-[#f97316] text-slate-950 font-bold px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer shadow-lg shadow-orange-500/20";
-      } else {
-        homeBtn.className = "w-full bg-[#201c18] hover:bg-[#2c2621] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b2723]";
-        allBtn.className = "w-full bg-[#201c18] hover:bg-[#2c2621] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b2723]";
+    function onSidebarCreatorClick(name) {
+      const c = allCreatorsData.find(item => item.name === name);
+      if (c) {
+        switchView('STREAMER', c);
       }
     }
 
     function renderClipsList() {
       const clipsList = document.getElementById('clips-list');
       const countBadge = document.getElementById('filtered-count-badge');
-      const label = document.getElementById('current-creator-filter-label');
+      if (!clipsList) return;
 
-      const filtered = (activeCreatorFilter === 'ALL')
+      const filtered = (!activeCreator || activeCreator === 'ALL')
         ? allClipsData
-        : allClipsData.filter(c => c.streamer === activeCreatorFilter);
+        : allClipsData.filter(c => c.streamer === activeCreator);
 
-      countBadge.textContent = filtered.length;
-      label.textContent = activeCreatorFilter === 'ALL' ? 'All Creators' : activeCreatorFilter;
+      if (countBadge) countBadge.textContent = filtered.length;
 
       if (filtered.length === 0) {
-        clipsList.innerHTML = `<div class="text-center py-8 text-xs text-stone-500">No clips found for ${activeCreatorFilter}.</div>`;
+        clipsList.innerHTML = `<div class="text-center py-8 text-xs text-stone-500">No clips found for ${activeCreator || 'this creator'}.</div>`;
         return;
       }
 
       clipsList.innerHTML = filtered.map(c => `
-        <div onclick="playClip('${c.url}', '${c.srt_url || ''}', '${escapeHtml(c.name)}') text-left"
-          class="p-2.5 rounded-xl border border-stone-800/80 hover:border-orange-500/60 bg-[#12100e] hover:bg-[#1c1814] transition flex items-center justify-between cursor-pointer group">
+        <div onclick="playClip('${c.url}', '${c.srt_url || ''}', '${escapeHtml(c.name)}')"
+          class="p-2.5 rounded-xl border border-stone-800/80 hover:border-orange-500/60 bg-[#12100e] hover:bg-[#1c1814] transition flex items-center justify-between cursor-pointer group text-left">
           <div class="flex items-center gap-2.5 overflow-hidden">
             <span class="text-base">📱</span>
             <div class="truncate">
@@ -1090,7 +1445,6 @@ def index_page():
       replayBar.classList.remove('hidden');
       actions.classList.remove('hidden');
 
-      // Set clean title on top floating badge
       const cleanTitle = clipName.replace(/_\\d{8}_\\d{6}.*/, '').replace(/_/g, ' ').toUpperCase();
       headerTitle.textContent = cleanTitle || "CLIP PREVIEW";
       headerBadge.classList.remove('hidden');
@@ -1125,7 +1479,6 @@ def index_page():
         document.getElementById('time-current').textContent = formatSeconds(cur);
         document.getElementById('seek-bar').value = ((cur / dur) * 100).toFixed(1);
 
-        // Subtitles display (Bold Yellow with black outline in lower blur area)
         if (currentParsedSubtitles.length > 0) {
           const activeSub = currentParsedSubtitles.find(s => cur >= s.start && cur <= s.end);
           const subText = document.getElementById('sub-text');
@@ -1209,9 +1562,9 @@ def index_page():
     }
 
     function getFilteredClips() {
-      return (activeCreatorFilter === 'ALL')
+      return (!activeCreator || activeCreator === 'ALL')
         ? allClipsData
-        : allClipsData.filter(c => c.streamer === activeCreatorFilter);
+        : allClipsData.filter(c => c.streamer === activeCreator);
     }
 
     function formatSeconds(sec) {
@@ -1228,16 +1581,16 @@ def index_page():
         const srtText = await res.text();
         currentParsedSubtitles = parseSRT(srtText);
       } catch (err) {
-        console.error("Subtitle load error:", err);
+        console.error("Subtitle error:", err);
       }
     }
 
     function parseSRT(srt) {
       const items = [];
-      const blocks = srt.trim().replace(/\\r\\n/g, '\\n').split('\\n\\n');
+      const blocks = srt.trim().replace(/\r\n/g, '\n').split('\n\n');
 
       for (const block of blocks) {
-        const lines = block.split('\\n');
+        const lines = block.split('\n');
         if (lines.length >= 2) {
           const timeLine = lines[1].includes('-->') ? lines[1] : (lines[0].includes('-->') ? lines[0] : null);
           if (!timeLine) continue;
@@ -1267,90 +1620,28 @@ def index_page():
       if (!t) return;
 
       const isYt = t.includes("youtube.com") || t.includes("youtu.be");
+      const isKick = t.includes("kick.com");
 
       if (isYt) {
         let vidId = null;
         const m1 = t.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-        const m2 = t.match(/(?:youtu\\.be\\/|\\/live\\/|\\/embed\\/)([a-zA-Z0-9_-]{11})/);
+        const m2 = t.match(/(?:youtu\.be\/|\/live\/|\/embed\/)([a-zA-Z0-9_-]{11})/);
         if (m1) vidId = m1[1];
         else if (m2) vidId = m2[1];
 
         if (vidId) {
           frame.src = `https://www.youtube.com/embed/${vidId}?autoplay=1`;
         }
+      } else if (isKick) {
+        const clean = t.replace(/^https?:\/\/(?:www\.)?kick\.com\//i, '').replace(/[@#]/g, '');
+        frame.src = `https://player.kick.com/${clean}`;
       } else {
-        const clean = t.replace(/^https?:\\/\\/(?:www\\.)?twitch\\.tv\\//i, '').replace(/[@#]/g, '');
+        const clean = t.replace(/^https?:\/\/(?:www\.)?twitch\.tv\//i, '').replace(/[@#]/g, '');
         frame.src = `https://player.twitch.tv/?channel=${clean}&parent=localhost&parent=127.0.0.1&muted=false`;
       }
 
       placeholder.classList.add('hidden');
       frame.classList.remove('hidden');
-      document.getElementById('platform-badge').classList.remove('hidden');
-      document.getElementById('player-live-dot').className = "w-2 h-2 rounded-full bg-red-500 animate-pulse";
-      document.getElementById('player-title').textContent = t;
-      document.getElementById('player-title').className = "font-mono text-orange-400";
-    }
-
-    async function startWatcher() {
-      const target = document.getElementById('input-target').value.trim();
-      const minMsgs = parseInt(document.getElementById('input-min').value) || 5;
-      const quality = document.getElementById('select-quality').value;
-      const model = document.getElementById('select-model').value;
-
-      if (!target) {
-        alert("Please enter a Twitch channel or YouTube URL.");
-        return;
-      }
-
-      updatePlayerEmbed(target);
-
-      try {
-        const res = await fetch('/api/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            target: target,
-            min_messages: minMsgs,
-            quality: quality,
-            whisper_model: model
-          })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          alert(`Error: ${data.detail || 'Could not start watcher'}`);
-        }
-        pollStatus();
-      } catch (err) {
-        alert("Connection error starting watcher: " + err);
-      }
-    }
-
-    async function stopWatcher() {
-      try {
-        const res = await fetch('/api/stop', { method: 'POST' });
-        const data = await res.json();
-        pollStatus();
-      } catch (err) {
-        alert("Error stopping watcher: " + err);
-      }
-    }
-
-    async function triggerManualClip() {
-      try {
-        const res = await fetch('/api/clip-now', { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) {
-          alert(data.detail || "Manual clip failed.");
-        } else {
-          const btn = document.getElementById('btn-clip-now');
-          const orig = btn.innerHTML;
-          btn.innerHTML = `<span class="text-orange-400">✅ Clip Scheduled!</span>`;
-          setTimeout(() => btn.innerHTML = orig, 2000);
-        }
-        pollStatus();
-      } catch (err) {
-        alert("Error triggering manual clip: " + err);
-      }
     }
 
     // Modal controls for + New Creator
@@ -1377,71 +1668,58 @@ def index_page():
         const res = await fetch('/api/creators', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, handle, platform })
+          body: JSON.stringify({ name: name, handle: handle, platform: platform })
         });
         const data = await res.json();
-        if (!res.ok) {
-          alert(data.detail || "Failed to add creator.");
-          return;
+        if (res.ok) {
+          closeNewCreatorModal();
+          pollStatus();
+          onSidebarCreatorClick(name);
+        } else {
+          alert(`Error: ${data.detail || 'Could not add creator'}`);
         }
-
-        closeNewCreatorModal();
-        document.getElementById('modal-input-name').value = '';
-        document.getElementById('modal-input-handle').value = '';
-        selectCreator(name, handle);
-        pollStatus();
       } catch (err) {
-        alert("Error adding creator: " + err);
+        alert("Connection error adding creator: " + err);
       }
     }
 
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    window.onload = () => {
-      initChart();
+    // Startup
+    window.addEventListener('DOMContentLoaded', () => {
       pollStatus();
       setInterval(pollStatus, 1500);
-    };
+    });
   </script>
 </body>
-</html>"""
-    return HTMLResponse(content=html_content)
+</html>
+"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="clip-watcher Studio Web Dashboard")
-    parser.add_argument("--host", default="127.0.0.1", help="Host address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000, help="Port to run on (default: 8000)")
+    import uvicorn
+    parser = argparse.ArgumentParser(description="clip-watcher Studio Server")
+    parser.add_argument("--port", type=int, default=8000, help="Port to run web server on")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind server to")
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser automatically")
     args = parser.parse_args()
 
-    url = f"http://{args.host}:{args.port}"
-    print("=" * 65)
-    print("      CLIP-WATCHER STUDIO (CREATORS HUB & 9:16 BLUR)       ")
-    print("=" * 65)
-    print(f" URL             : {url}")
-    print(f" Streamers Hub   : Left Sidebar (Home, All Videos, Creators)")
-    print(f" Clip Folders    : clips/<creator_name>/")
-    print(f" Video Replay    : HTTP 206 Range Streaming + Replay ↺ + Loop")
-    print(f" Clips Output    : {CLIPS_DIR}")
-    print("=" * 65)
-
     if not args.no_browser:
-        def _open_tab():
-            time.sleep(1.2)
-            try:
-                webbrowser.open(url)
-            except Exception:
-                pass
+        threading.Thread(target=lambda: (time.sleep(1.2), webbrowser.open(f"http://localhost:{args.port}")), daemon=True).start()
 
-        threading.Thread(target=_open_tab, daemon=True).start()
-
-    import uvicorn
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    print(f"""=================================================================
+      PEAK CUT STUDIO (CREATORS HUB & 9:16 BLUR)       
+=================================================================
+ URL             : http://{args.host}:{args.port}
+ Streamers Hub   : Left Sidebar (Home, All Videos, Creators)
+ Clip Folders    : clips/<creator_name>/
+ Video Replay    : HTTP 206 Range Streaming + Replay + Loop
+ Clips Output    : {CLIPS_DIR}
+=================================================================""")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":
