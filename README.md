@@ -28,7 +28,7 @@ Or launch the visual web dashboard:
    - **Twitch**: Connects anonymously to Twitch IRC (`irc.chat.twitch.tv:6667`, `NICK justinfan12345`, no token required).
    - **YouTube**: Connects to the YouTube Live Chat stream via `pytchat` (no API key or OAuth needed).
 3. **Spike Detection Engine**: Aggregates chat message counts in **10-second buckets**. A spike is detected when:
-   $$\text{Bucket Messages} \ge 2.0 \times \text{Median(last 3 minutes)} \quad \text{AND} \quad \text{Bucket Messages} \ge \text{--min}$$
+   $$\text{Bucket Messages} \ge 1.9 \times \text{Median(last 3 minutes)} \quad \text{AND} \quad \text{Bucket Messages} \ge \text{--min}$$
 4. **9:16 Vertical Clip Cutter (`ffmpeg`)**: Automatically cuts **20 seconds before + 10 seconds after** (30s total) into `clips/`, center-cropped to vertical **9:16** format (ready for TikTok, YouTube Shorts, and Instagram Reels).
 5. **Whisper Subtitles (`openai-whisper`)**: Transcribes the audio of each generated clip using OpenAI Whisper and writes synchronized `.srt` subtitles alongside the video.
 

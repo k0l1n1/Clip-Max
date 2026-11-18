@@ -362,7 +362,7 @@ class CreatorSession:
                 bucket_seconds=10,
                 window_minutes=3,
                 cooldown_seconds=self.cooldown,
-                multiplier=2.0,
+                multiplier=1.9,
             )
 
         if self.platform == "youtube":
