@@ -92,7 +92,7 @@ class WatcherManager:
         self.creators = self._load_creators()
 
     def _load_creators(self) -> dict:
-        """Loads creators matching UI reference and merges with creators.json and folders in clips/."""
+        """Loads creators from creators.json or initializes with defaults."""
         default_creators = {
             "IShowSpeed": {"name": "IShowSpeed", "platform": "youtube", "handle": "https://www.youtube.com/@IShowSpeed/live", "avatar": "/static/avatars/ishowspeed.png"},
             "Jynxzi": {"name": "Jynxzi", "platform": "twitch", "handle": "jynxzi", "avatar": "/static/avatars/jynxzi.png"},
@@ -104,21 +104,10 @@ class WatcherManager:
             try:
                 with open(CREATORS_FILE, "r", encoding="utf-8") as f:
                     saved = json.load(f)
-                    default_creators.update(saved)
+                    if isinstance(saved, dict) and len(saved) > 0:
+                        return saved
             except Exception:
                 pass
-
-        # Also add any folders existing in clips/ if they have content
-        for item in CLIPS_DIR.iterdir():
-            if item.is_dir() and not item.name.startswith("."):
-                name = item.name
-                if name not in default_creators:
-                    default_creators[name] = {
-                        "name": name,
-                        "platform": "youtube" if "youtube" in name.lower() else "twitch",
-                        "handle": name,
-                        "avatar": f"https://unavatar.io/twitch/{name}",
-                    }
 
         return default_creators
 
@@ -154,6 +143,27 @@ class WatcherManager:
             self._save_creators()
             self.add_log(f"Added creator '{clean_name}' (clips/{clean_name}/)")
             return True, f"Creator '{clean_name}' added successfully."
+
+    def remove_creator(self, name: str, delete_clips: bool = False):
+        with self.lock:
+            clean_name = name.strip()
+            if clean_name not in self.creators:
+                return False, f"Creator '{clean_name}' not found."
+
+            # If this creator is currently running, stop watcher first
+            if self.is_running and self.target_name == clean_name:
+                self.stop()
+
+            del self.creators[clean_name]
+            self._save_creators()
+
+            if delete_clips:
+                creator_folder = CLIPS_DIR / clean_name
+                if creator_folder.exists() and creator_folder.is_dir():
+                    shutil.rmtree(creator_folder, ignore_errors=True)
+
+            self.add_log(f"🗑️ Removed creator '{clean_name}'.")
+            return True, f"Creator '{clean_name}' removed successfully."
 
     def add_log(self, text: str):
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
@@ -511,6 +521,23 @@ def api_add_creator(req: AddCreatorRequest):
     return {"status": "ok", "message": msg}
 
 
+@app.delete("/api/creators/{name}")
+def api_remove_creator(name: str):
+    success, msg = manager.remove_creator(name)
+    if not success:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.post("/api/creators/remove")
+def api_remove_creator_post(req: dict):
+    name = req.get("name", "")
+    success, msg = manager.remove_creator(name)
+    if not success:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
 @app.get("/api/status")
 def api_status():
     return manager.get_status()
@@ -782,6 +809,13 @@ def index_page():
           <button id="btn-streamer-stop" onclick="stopWatcher()"
             class="hidden bg-red-600 hover:bg-red-500 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer">
             ⏹ Stop Recording
+          </button>
+
+          <!-- Remove Creator Button -->
+          <button id="btn-remove-streamer" onclick="removeCurrentCreator()"
+            class="text-stone-400 hover:text-red-400 border border-stone-800 hover:border-red-500/40 px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 transition cursor-pointer" title="Remove this creator">
+            <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            <span>Remove</span>
           </button>
         </div>
       </div>
@@ -1353,7 +1387,12 @@ def index_page():
 
     function updateSidebarCreators(creators) {
       const container = document.getElementById('creators-sidebar-list');
-      if (!creators || creators.length === 0) return;
+      if (!container) return;
+
+      if (!creators || creators.length === 0) {
+        container.innerHTML = `<div class="text-xs text-stone-500 px-3 py-2">No creators yet.</div>`;
+        return;
+      }
 
       container.innerHTML = creators.map(c => {
         const isSelected = (currentView === 'STREAMER' && activeCreator === c.name);
@@ -1369,7 +1408,14 @@ def index_page():
                 class="w-7 h-7 rounded-full object-cover shrink-0 border border-stone-800" />
               <span class="truncate text-xs font-semibold">${escapeHtml(c.name)}</span>
             </div>
-            ${c.clip_count > 0 ? `<span class="text-[10px] font-mono font-bold text-stone-400 bg-stone-900 px-1.5 py-0.5 rounded-full">${c.clip_count}</span>` : ''}
+            <div class="flex items-center gap-1.5 shrink-0">
+              ${c.clip_count > 0 ? `<span class="text-[10px] font-mono font-bold text-stone-400 bg-stone-900 px-1.5 py-0.5 rounded-full">${c.clip_count}</span>` : ''}
+              <button onclick="event.stopPropagation(); removeCreator('${escapeHtml(c.name)}')"
+                title="Remove creator"
+                class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-stone-500 rounded transition cursor-pointer">
+                <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              </button>
+            </div>
           </div>
         `;
       }).join('');
@@ -1680,6 +1726,34 @@ def index_page():
         }
       } catch (err) {
         alert("Connection error adding creator: " + err);
+      }
+    }
+
+    async function removeCreator(name) {
+      if (!name) return;
+      if (!confirm(`Are you sure you want to remove creator "${name}"?`)) return;
+
+      try {
+        const res = await fetch(`/api/creators/${encodeURIComponent(name)}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (res.ok) {
+          if (activeCreator === name) {
+            switchView('HOME');
+          }
+          pollStatus();
+        } else {
+          alert(`Error: ${data.detail || 'Could not remove creator'}`);
+        }
+      } catch (err) {
+        alert("Error removing creator: " + err);
+      }
+    }
+
+    function removeCurrentCreator() {
+      if (activeCreator && activeCreator !== 'ALL') {
+        removeCreator(activeCreator);
       }
     }
 
