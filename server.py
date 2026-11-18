@@ -169,6 +169,59 @@ class WatcherManager:
             self.add_log(f"🗑️ Removed creator '{clean_name}'.")
             return True, f"Creator '{clean_name}' removed successfully."
 
+    def delete_session_videos(self, streamer_name: str):
+        with self.lock:
+            clean_name = streamer_name.strip()
+            if not clean_name:
+                return False, "Streamer name cannot be empty."
+
+            deleted_count = 0
+            # 1. Clean out all files in clips/<clean_name>/
+            creator_folder = CLIPS_DIR / clean_name
+            if creator_folder.exists() and creator_folder.is_dir():
+                for f in list(creator_folder.iterdir()):
+                    if f.is_file():
+                        try:
+                            f.unlink()
+                            deleted_count += 1
+                        except Exception as e:
+                            print(f"Error removing {f}: {e}")
+
+            # 2. Also clean any loose clips matching clean_name in CLIPS_DIR
+            for f in CLIPS_DIR.glob(f"{clean_name}*"):
+                if f.is_file():
+                    try:
+                        f.unlink()
+                        deleted_count += 1
+                    except Exception:
+                        pass
+
+            self.add_log(f"🗑️ Deleted {deleted_count} video file(s) for '{clean_name}'. Creator profile was preserved.")
+            return True, f"Deleted {deleted_count} video file(s) for '{clean_name}'. Creator was preserved."
+
+    def delete_clip(self, clip_path_rel: str):
+        with self.lock:
+            clean_rel = clip_path_rel.strip().lstrip("/").replace("\\", "/")
+            if "clips/" in clean_rel:
+                clean_rel = clean_rel.split("clips/", 1)[1]
+
+            target_file = (CLIPS_DIR / clean_rel).resolve()
+            if not str(target_file).startswith(str(CLIPS_DIR.resolve())):
+                return False, "Invalid clip path."
+
+            if not target_file.exists():
+                return False, "Clip file not found."
+
+            try:
+                target_file.unlink()
+                srt_file = target_file.with_suffix(".srt")
+                if srt_file.exists():
+                    srt_file.unlink()
+                self.add_log(f"🗑️ Deleted clip '{target_file.name}'.")
+                return True, f"Deleted clip '{target_file.name}'."
+            except Exception as e:
+                return False, f"Failed to delete clip: {e}"
+
     def add_log(self, text: str):
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         with self.lock:
@@ -673,6 +726,40 @@ def api_remove_creator_post(req: dict):
     success, msg = manager.remove_creator(name)
     if not success:
         raise HTTPException(status_code=404, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.delete("/api/videos/session/{streamer_name}")
+def api_delete_session_videos(streamer_name: str):
+    success, msg = manager.delete_session_videos(streamer_name)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.post("/api/videos/delete-session")
+def api_delete_session_videos_post(req: dict):
+    streamer_name = req.get("streamer", req.get("name", ""))
+    success, msg = manager.delete_session_videos(streamer_name)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.delete("/api/clips/{clip_rel_path:path}")
+def api_delete_clip(clip_rel_path: str):
+    success, msg = manager.delete_clip(clip_rel_path)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.post("/api/clips/delete")
+def api_delete_clip_post(req: dict):
+    clip_path = req.get("clip_path", req.get("path", req.get("url", "")))
+    success, msg = manager.delete_clip(clip_path)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
     return {"status": "ok", "message": msg}
 
 
@@ -1262,6 +1349,9 @@ def index_page():
         <a id="btn-modal-dl-srt" href="#" download class="flex-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs py-2 rounded-xl text-center font-semibold transition">
           ⬇ Subtitles (.srt)
         </a>
+        <button onclick="deleteModalClip()" title="Delete this video" class="p-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 text-xs rounded-xl font-semibold transition cursor-pointer">
+          <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </button>
       </div>
 
     </div>
@@ -1771,7 +1861,12 @@ def index_page():
               <div class="text-[10px] text-stone-400 font-mono">${c.streamer} &bull; ${c.created_at} &bull; ${c.size_mb} MB ${c.has_srt ? '&bull; <span class="text-amber-400 font-bold">SRT</span>' : ''}</div>
             </div>
           </div>
-          <span class="text-xs text-orange-400 font-mono group-hover:translate-x-0.5 transition">&rarr;</span>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button onclick="event.stopPropagation(); deleteSingleClip('${c.url}')" title="Delete clip" class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-stone-500 rounded transition cursor-pointer">
+              <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            </button>
+            <span class="text-xs text-orange-400 font-mono group-hover:translate-x-0.5 transition">&rarr;</span>
+          </div>
         </div>
       `).join('');
     }
@@ -2063,6 +2158,40 @@ def index_page():
       }
     }
 
+    async function deleteSessionVideos(streamerName) {
+      if (!confirm(`Delete all recorded videos for '${streamerName}'? The creator will NOT be deleted.`)) return;
+      try {
+        const res = await fetch(`/api/videos/session/${encodeURIComponent(streamerName)}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (res.ok) {
+          pollStatus();
+        } else {
+          alert(`Error: ${data.detail || 'Could not delete video list'}`);
+        }
+      } catch (err) {
+        alert("Error deleting video list: " + err);
+      }
+    }
+
+    async function deleteSingleClip(clipUrl) {
+      if (!confirm("Delete this video clip?")) return;
+      try {
+        const res = await fetch(`/api/clips/${encodeURIComponent(clipUrl)}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (res.ok) {
+          pollStatus();
+        } else {
+          alert(`Error: ${data.detail || 'Could not delete clip'}`);
+        }
+      } catch (err) {
+        alert("Error deleting clip: " + err);
+      }
+    }
+
     function escapeHtml(str) {
       if (!str) return '';
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -2117,7 +2246,7 @@ def index_page():
               <a href="${session.clips[0].url}" download title="Download Recording" class="p-2 hover:text-neutral-900 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
                 <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
               </a>
-              <button onclick="removeCreator('${escapeHtml(session.streamer)}')" title="Delete" class="p-2 hover:text-red-500 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
+              <button onclick="deleteSessionVideos('${escapeHtml(session.streamer)}')" title="Delete video list (keeps creator)" class="p-2 hover:text-red-500 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
                 <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
               </button>
               <input type="checkbox" checked class="w-4 h-4 rounded accent-orange-500 ml-1 cursor-pointer" />
@@ -2161,6 +2290,11 @@ def index_page():
                   </div>
                 </div>
 
+                <!-- Hover Delete Single Video Button -->
+                <button onclick="event.stopPropagation(); deleteSingleClip('${c.url}')" title="Delete this video" class="absolute bottom-2.5 right-2.5 z-30 opacity-0 group-hover:opacity-100 p-1.5 bg-black/80 hover:bg-red-600 text-white rounded-lg transition shadow-md cursor-pointer">
+                  <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                </button>
+
               </div>
             `).join('')}
           </div>
@@ -2191,7 +2325,10 @@ def index_page():
     }
 
     // Modal Review Controls
+    let currentModalVideoUrl = '';
+
     async function openReviewModal(videoUrl, srtUrl, headline) {
+      currentModalVideoUrl = videoUrl;
       const modal = document.getElementById('modal-review-player');
       const player = document.getElementById('modal-video-player');
       const title = document.getElementById('modal-review-title');
@@ -2260,6 +2397,25 @@ def index_page():
       const player = document.getElementById('modal-video-player');
       if (player) player.pause();
       modal.classList.add('hidden');
+    }
+
+    async function deleteModalClip() {
+      if (!currentModalVideoUrl) return;
+      if (!confirm("Are you sure you want to delete this clip?")) return;
+      try {
+        const res = await fetch(`/api/clips/${encodeURIComponent(currentModalVideoUrl)}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (res.ok) {
+          closeReviewModal();
+          pollStatus();
+        } else {
+          alert(`Error: ${data.detail || 'Could not delete clip'}`);
+        }
+      } catch (err) {
+        alert("Error deleting clip: " + err);
+      }
     }
 
     async function loadModalSubtitles(srtUrl) {

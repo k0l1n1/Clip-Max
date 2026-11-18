@@ -22,5 +22,11 @@
     "platform": "youtube",
     "handle": "MrBeast",
     "avatar": "https://unavatar.io/youtube/MrBeast"
+  },
+  "typicalgamer": {
+    "name": "typicalgamer",
+    "platform": "twitch",
+    "handle": "https://www.twitch.tv/typicalgamer",
+    "avatar": "https://unavatar.io/twitch/typicalgamer"
   }
 }
