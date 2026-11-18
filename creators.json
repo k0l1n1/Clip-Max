@@ -20,7 +20,7 @@
   "MrBeast": {
     "name": "MrBeast",
     "platform": "youtube",
-    "handle": "https://www.youtube.com/@MrBeast",
-    "avatar": "/static/avatars/mrbeast.png"
+    "handle": "MrBeast",
+    "avatar": "https://unavatar.io/youtube/MrBeast"
   }
 }

@@ -72,6 +72,8 @@ class WatcherManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.is_running = False
+        self.is_monitoring_chat = False
+        self.active_creator = ""
         self.platform = "twitch"
         self.target_name = ""
         self.stream_url = ""
@@ -85,8 +87,10 @@ class WatcherManager:
         self.detector = None
         self.clip_processor = None
         self.bucket_history = collections.deque(maxlen=30)
+        self.current_live_count = 0
         self.log_messages = collections.deque(maxlen=60)
-        self.monitor_thread = None
+        self.velocity_thread = None
+        self.velocity_thread_running = False
 
         # Load creators list
         self.creators = self._load_creators()
@@ -170,61 +174,167 @@ class WatcherManager:
         with self.lock:
             self.log_messages.append(f"[{now_str}] {text}")
 
+    def set_active_creator(self, name_or_target: str):
+        with self.lock:
+            # Match in self.creators
+            target_info = None
+            matched_name = None
+            for c_name, c_info in self.creators.items():
+                if c_name.lower() == name_or_target.lower() or c_info.get("handle", "").lower() == name_or_target.lower():
+                    matched_name = c_name
+                    target_info = resolve_stream_target(c_info.get("handle") or c_name)
+                    break
+
+            if not target_info:
+                target_info = resolve_stream_target(name_or_target)
+                matched_name = target_info["display_name"]
+
+            # If already monitoring this creator and listener is active, do not restart
+            if (
+                self.active_creator == matched_name
+                and self.chat_listener
+                and getattr(self.chat_listener, "running", False)
+            ):
+                return True, f"Already monitoring chat for {matched_name}"
+
+            self.active_creator = matched_name
+            self.target_name = matched_name
+            self.platform = target_info["platform"]
+            self.stream_url = target_info["stream_url"]
+
+            # Stop old chat listener if running
+            if self.chat_listener:
+                try:
+                    self.chat_listener.stop()
+                except Exception:
+                    pass
+                self.chat_listener = None
+
+            # Seed 18 baseline buckets so chart renders active timestamps and lines immediately
+            self.bucket_history.clear()
+            now = datetime.datetime.now()
+            for i in range(18):
+                t_bucket = now - datetime.timedelta(seconds=(18 - i) * 10)
+                self.bucket_history.append({
+                    "time": t_bucket.strftime("%H:%M:%S"),
+                    "stream_time": i * 10,
+                    "count": 0,
+                    "median": 0.0,
+                    "threshold": float(self.min_messages),
+                    "is_spike": False,
+                })
+
+            self.detector = SpikeDetector(
+                min_messages=self.min_messages,
+                bucket_seconds=10,
+                window_minutes=3,
+                cooldown_seconds=self.cooldown,
+            )
+
+            # Connect chat listener
+            if self.platform == "youtube":
+                yt_id = target_info.get("youtube_video_id")
+                if yt_id:
+                    self.youtube_video_id = yt_id
+                    self.chat_listener = YouTubeChatListener(video_id=yt_id)
+                    self.chat_listener.start()
+                    self.add_log(f"🟢 [YouTube Chat] Connected to live chat ({yt_id}) for {matched_name}.")
+                else:
+                    self.add_log(f"Selected {matched_name}. YouTube live ID will resolve when video is loaded.")
+            else:
+                channel = target_info.get("channel", matched_name)
+                self.chat_listener = TwitchIRCListener(channel=channel)
+                self.chat_listener.start()
+                self.add_log(f"🟢 [Twitch IRC] Connected to #{channel} chat for {matched_name}.")
+
+            self.is_monitoring_chat = True
+            self._ensure_velocity_thread()
+            return True, f"Now monitoring chat velocity for {matched_name}"
+
+    def _ensure_velocity_thread(self):
+        if self.velocity_thread is None or not self.velocity_thread.is_alive():
+            self.velocity_thread_running = True
+            self.velocity_thread = threading.Thread(
+                target=self._chat_velocity_loop, daemon=True, name="ChatVelocityThread"
+            )
+            self.velocity_thread.start()
+
+    def _chat_velocity_loop(self):
+        bucket_interval = 10.0
+        last_bucket_time = time.time()
+
+        while self.velocity_thread_running:
+            time.sleep(1.0)
+            now = time.time()
+            elapsed_in_bucket = now - last_bucket_time
+
+            # Read live message count in the current in-progress 10s interval
+            if self.chat_listener and hasattr(self.chat_listener, "get_messages_in_interval"):
+                current_msgs = self.chat_listener.get_messages_in_interval(last_bucket_time, now)
+            else:
+                current_msgs = 0
+
+            with self.lock:
+                self.current_live_count = current_msgs
+
+            if elapsed_in_bucket >= bucket_interval:
+                bucket_start = last_bucket_time
+                bucket_end = now
+                last_bucket_time = now
+
+                count = current_msgs
+                stream_time = (
+                    self.recorder.get_elapsed_stream_time()
+                    if (self.recorder and self.is_running and self.recorder.is_alive())
+                    else 0.0
+                )
+
+                if self.detector:
+                    is_spike, med, threshold = self.detector.evaluate_bucket(count, stream_time)
+                else:
+                    med = 0.0
+                    threshold = float(self.min_messages)
+                    is_spike = count >= threshold
+
+                bucket_entry = {
+                    "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "stream_time": int(stream_time),
+                    "count": count,
+                    "median": round(med, 1),
+                    "threshold": round(threshold, 1),
+                    "is_spike": is_spike,
+                }
+
+                with self.lock:
+                    self.bucket_history.append(bucket_entry)
+
+                if is_spike:
+                    self.add_log(f"🚨 CHAT SPIKE! ({count} msgs >= {threshold:.1f} threshold).")
+                    if self.is_running and self.recorder and self.recorder.is_alive() and self.clip_processor:
+                        spike_center = max(0.0, stream_time - 5.0)
+                        self.add_log(f"Auto-cutting 9:16 vertical clip into clips/{self.target_name}/...")
+                        self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
+
     def start(self, target: str, min_messages: int = 5, quality: str = "720p60,best", whisper_model: str = "tiny"):
         with self.lock:
-            if self.is_running:
-                return False, "Watcher is already running. Stop it first."
-
-            target_info = resolve_stream_target(target)
-            self.platform = target_info["platform"]
-            self.target_name = target_info["display_name"]
-            self.stream_url = target_info["stream_url"]
+            # Set active creator and ensure chat monitoring is active
+            self.set_active_creator(target)
             self.min_messages = min_messages
             self.quality = quality
             self.whisper_model = whisper_model
-            self.bucket_history.clear()
-            self.is_running = True
 
-            # Ensure creator is in creators list
-            if self.target_name not in self.creators:
-                self.add_creator(name=self.target_name, handle=self.stream_url, platform=self.platform)
+            target_info = resolve_stream_target(target)
+            self.add_log(f"Starting video stream recording for {self.platform.upper()}: {self.stream_url}...")
 
-            self.add_log(f"Starting watcher for {self.platform.upper()}: {self.stream_url}...")
-
-            # If YouTube target has no direct video ID, probe streamlink
-            if self.platform == "youtube" and not target_info.get("youtube_video_id"):
-                self.add_log(f"Resolving YouTube live video ID for {self.stream_url}...")
-                try:
-                    probe = subprocess.run(["streamlink", "--json", self.stream_url], capture_output=True, text=True)
-                    meta = json.loads(probe.stdout)
-                    yt_id = meta.get("metadata", {}).get("id")
-                    if yt_id:
-                        target_info["youtube_video_id"] = yt_id
-                        self.add_log(f"Found active YouTube live ID: {yt_id}")
-                except Exception as e:
-                    self.add_log(f"Probe error: {e}")
-
-            self.youtube_video_id = target_info.get("youtube_video_id")
-
-            # 1. Start Chat Listener
-            if self.platform == "youtube":
-                if not self.youtube_video_id:
-                    self.is_running = False
-                    return False, "Could not determine YouTube live video ID for chat."
-                self.chat_listener = YouTubeChatListener(video_id=self.youtube_video_id)
-            else:
-                self.chat_listener = TwitchIRCListener(channel=target_info["channel"])
-
-            self.chat_listener.start()
-
-            # 2. Start Streamlink
+            # Start Streamlink
             self.recorder = StreamRecorder(target_info=target_info, quality=self.quality, rec_dir=REC_DIR)
-            if not self.recorder.start():
+            started = self.recorder.start()
+            if not started:
                 self.is_running = False
-                self.chat_listener.stop()
-                return False, f"Failed to start streamlink. Stream may be offline."
+                self.add_log("Notice: Video stream appears offline, but live chat velocity is actively monitoring.")
+                return True, f"Chat velocity active for {self.target_name} (video stream offline)."
 
-            # 3. Setup Clip Processor with per-creator folder
+            # Setup Clip Processor with per-creator folder
             self.clip_processor = ClipProcessor(
                 rec_path=self.recorder.rec_path,
                 streamer_name=self.target_name,
@@ -233,39 +343,27 @@ class WatcherManager:
                 enable_whisper=True,
                 on_log=self.add_log,
             )
-            self.detector = SpikeDetector(
-                min_messages=self.min_messages,
-                bucket_seconds=10,
-                window_minutes=3,
-                cooldown_seconds=self.cooldown,
-            )
-
-            # 4. Start background monitoring loop
-            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True, name="WatcherMonitor")
-            self.monitor_thread.start()
-
-            return True, f"Started watching {self.platform.upper()} stream: {self.target_name}"
+            self.is_running = True
+            return True, f"Started recording stream & tracking chat for {self.target_name}"
 
     def stop(self):
         with self.lock:
             if not self.is_running:
-                return False, "Watcher is not running."
+                return False, "Stream recording is not currently running."
 
             self.is_running = False
-            self.add_log("Stopping watcher...")
-            if self.chat_listener:
-                self.chat_listener.stop()
+            self.add_log("Stopping stream recorder...")
             if self.recorder:
                 self.recorder.stop()
             if self.clip_processor:
                 self.clip_processor.stop()
-            self.add_log("Watcher stopped.")
-            return True, "Watcher stopped successfully."
+            self.add_log("Stream recorder stopped. Chat velocity remains active.")
+            return True, "Stream recorder stopped."
 
     def manual_clip(self):
         with self.lock:
-            if not self.is_running or not self.recorder:
-                return False, "Watcher is not currently running. Click '▶ Start Watcher' on the live stream first."
+            if not self.is_running or not self.recorder or not self.recorder.is_alive():
+                return False, "Stream recording is not active. Click '▶ Start Recording' on an active live stream first."
 
             stream_time = self.recorder.get_elapsed_stream_time()
             if stream_time < 3:
@@ -275,57 +373,6 @@ class WatcherManager:
             self.add_log(f"✂️ Manual clip triggered for {self.target_name} at stream time {stream_time:.1f}s! Cutting 30s 9:16 vertical video...")
             self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
             return True, f"Manual clip scheduled for {self.target_name}! 9:16 vertical render will be ready in ~12s."
-
-    def _monitor_loop(self):
-        self.add_log("Waiting 5s for recording buffer & chat connection to stabilize...")
-        time.sleep(5)
-
-        if not self.recorder or not self.recorder.is_alive():
-            self.add_log("Notice: Stream appears offline or streamlink exited.")
-            self.is_running = False
-            return
-
-        self.add_log("Live monitoring active.")
-        bucket_interval = 10.0
-        next_bucket_time = time.time() + bucket_interval
-
-        while self.is_running:
-            if self.recorder and not self.recorder.is_alive():
-                self.add_log("Streamlink process has finished or disconnected.")
-                self.is_running = False
-                break
-
-            now = time.time()
-            sleep_time = next_bucket_time - now
-            if sleep_time > 0:
-                time.sleep(min(0.5, sleep_time))
-                continue
-
-            bucket_end = next_bucket_time
-            bucket_start = bucket_end - bucket_interval
-            next_bucket_time += bucket_interval
-
-            msg_count = self.chat_listener.get_messages_in_interval(bucket_start, bucket_end)
-            stream_time = self.recorder.get_elapsed_stream_time()
-
-            is_spike, med, threshold = self.detector.evaluate_bucket(msg_count, stream_time)
-
-            bucket_entry = {
-                "time": datetime.datetime.now().strftime("%H:%M:%S"),
-                "stream_time": int(stream_time),
-                "count": msg_count,
-                "median": round(med, 1),
-                "threshold": round(threshold, 1),
-                "is_spike": is_spike,
-            }
-
-            with self.lock:
-                self.bucket_history.append(bucket_entry)
-
-            if is_spike:
-                self.add_log(f"🚨 CHAT SPIKE! ({msg_count} msgs >= {threshold:.1f} thresh). Auto-cutting 9:16 clip into clips/{self.target_name}/...")
-                spike_center = max(0.0, stream_time - 5.0)
-                self.clip_processor.schedule_clip(spike_center, trigger_wall_time=time.time())
 
     def get_status(self):
         with self.lock:
@@ -422,8 +469,31 @@ class WatcherManager:
                     "clips": c_clips,
                 })
 
+            # Generate chart buckets: include recent history plus live in-progress entry
+            chart_buckets = list(self.bucket_history)
+            if chart_buckets:
+                latest_med = chart_buckets[-1]["median"]
+                latest_thresh = chart_buckets[-1]["threshold"]
+            else:
+                latest_med = 0.0
+                latest_thresh = float(self.min_messages)
+
+            # In-progress bucket showing live count
+            cur_entry = {
+                "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                "stream_time": int(elapsed),
+                "count": self.current_live_count,
+                "median": latest_med,
+                "threshold": latest_thresh,
+                "is_spike": False,
+                "is_live": True,
+            }
+            full_buckets = chart_buckets + [cur_entry]
+
             return {
                 "is_running": self.is_running,
+                "is_monitoring_chat": self.is_monitoring_chat,
+                "active_creator": self.active_creator,
                 "platform": self.platform,
                 "target_name": self.target_name,
                 "stream_url": self.stream_url,
@@ -432,7 +502,8 @@ class WatcherManager:
                 "quality": self.quality,
                 "whisper_model": self.whisper_model,
                 "elapsed_seconds": int(elapsed),
-                "bucket_history": list(self.bucket_history),
+                "bucket_history": full_buckets,
+                "current_live_count": self.current_live_count,
                 "logs": list(self.log_messages),
                 "creators": creators_list,
                 "clips": clips,
@@ -441,6 +512,12 @@ class WatcherManager:
 
 
 manager = WatcherManager()
+# Boot-start chat velocity on first creator
+try:
+    first_c = next(iter(manager.creators.keys()), "KaiCenat")
+    manager.set_active_creator(first_c)
+except Exception as e:
+    print(f"Error initializing chat monitoring: {e}")
 
 
 class StartRequest(BaseModel):
@@ -448,6 +525,10 @@ class StartRequest(BaseModel):
     min_messages: int = 5
     quality: str = "720p60,best"
     whisper_model: str = "tiny"
+
+
+class SelectCreatorRequest(BaseModel):
+    name: str
 
 
 class AddCreatorRequest(BaseModel):
@@ -558,6 +639,12 @@ async def api_upload_video(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/creators/select")
+def api_select_creator(req: SelectCreatorRequest):
+    success, msg = manager.set_active_creator(req.name)
+    return {"status": "ok" if success else "error", "message": msg}
 
 
 @app.post("/api/creators")
@@ -902,6 +989,10 @@ def index_page():
               <div class="flex items-center gap-2">
                 <span class="text-base">📈</span>
                 <h3 class="font-semibold text-xs text-stone-200">Chat Velocity (10s Buckets)</h3>
+                <span id="chat-live-badge" class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-950/80 text-emerald-400 border border-emerald-800/80">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span id="chat-live-channel">Live Chat</span>
+                </span>
               </div>
               <div class="flex items-center gap-3 text-xs font-mono text-[11px]">
                 <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-orange-500"></span><span class="text-stone-400">Msgs</span></div>
@@ -1241,7 +1332,7 @@ def index_page():
               type: 'bar',
               label: 'Messages',
               data: [],
-              backgroundColor: 'rgba(249, 115, 22, 0.7)',
+              backgroundColor: 'rgba(249, 115, 22, 0.75)',
               borderColor: 'rgba(249, 115, 22, 1)',
               borderWidth: 1,
               borderRadius: 4,
@@ -1275,10 +1366,18 @@ def index_page():
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          animation: { duration: 250 },
+          animation: false,
           scales: {
-            x: { grid: { color: 'rgba(255, 255, 255, 0.04)' }, ticks: { color: '#78716c', font: { size: 10 } } },
-            y: { beginAtZero: true, grid: { color: 'rgba(255, 255, 255, 0.04)' }, ticks: { color: '#78716c', font: { size: 10 } } }
+            x: {
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: '#78716c', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }
+            },
+            y: {
+              beginAtZero: true,
+              suggestedMax: 8,
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: '#78716c', font: { size: 10 }, precision: 0 }
+            }
           },
           plugins: { legend: { display: false } }
         }
@@ -1333,6 +1432,13 @@ def index_page():
 
       updatePlayerEmbed(c.handle || c.name);
       renderClipsList();
+
+      // Immediately connect live chat velocity monitoring to this creator
+      fetch('/api/creators/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: c.name })
+      }).then(() => pollStatus()).catch(e => console.error(e));
     }
 
     // Home Card Action: Paste link and Click Make Clips -> Redirects to Streamer Profile & Starts
@@ -1544,13 +1650,26 @@ def index_page():
       }
 
       // 3. Chart update
-      if (chartInstance && data.bucket_history) {
-        chartInstance.data.labels = data.bucket_history.map(b => b.time);
-        chartInstance.data.datasets[0].data = data.bucket_history.map(b => b.count);
-        chartInstance.data.datasets[0].backgroundColor = data.bucket_history.map(b => b.is_spike ? 'rgba(239, 68, 68, 0.9)' : 'rgba(249, 115, 22, 0.7)');
-        chartInstance.data.datasets[1].data = data.bucket_history.map(b => b.median);
-        chartInstance.data.datasets[2].data = data.bucket_history.map(b => b.threshold);
-        chartInstance.update();
+      if (data.bucket_history && data.bucket_history.length > 0) {
+        if (!chartInstance) initChart();
+        if (chartInstance) {
+          chartInstance.data.labels = data.bucket_history.map(b => b.time);
+          chartInstance.data.datasets[0].data = data.bucket_history.map(b => b.count);
+          chartInstance.data.datasets[0].backgroundColor = data.bucket_history.map(b => 
+            b.is_spike ? 'rgba(239, 68, 68, 0.9)' : (b.is_live ? 'rgba(251, 146, 60, 0.95)' : 'rgba(249, 115, 22, 0.75)')
+          );
+          chartInstance.data.datasets[1].data = data.bucket_history.map(b => b.median);
+          chartInstance.data.datasets[2].data = data.bucket_history.map(b => b.threshold);
+          chartInstance.update();
+        }
+      }
+
+      // Live Chat Badge update
+      const liveChan = document.getElementById('chat-live-channel');
+      if (liveChan) {
+        const plat = (data.platform || 'TWITCH').toUpperCase();
+        const target = data.target_name || activeCreator || 'LIVE';
+        liveChan.textContent = `${plat}: #${target}`;
       }
 
       // 4. Log Box
@@ -2189,6 +2308,7 @@ def index_page():
 
     // Startup
     window.addEventListener('DOMContentLoaded', () => {
+      initChart();
       pollStatus();
       setInterval(pollStatus, 1500);
     });
