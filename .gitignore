@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+venv/
+env/
+ENV/
+
+# Recordings and raw streams
+rec/*
+!rec/.gitkeep
+*.ts
+*.mkv
+
+# Video binaries (keep directories via .gitkeep)
+clips/**/*.mp4
+clips/*.mp4
+!clips/**/.gitkeep
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
