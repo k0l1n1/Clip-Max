@@ -332,6 +332,11 @@ class CreatorSession:
         self.cooldown = 30
         self.started_at = None
 
+        # Custom Range Recording (Point A -> Point B)
+        self.custom_rec_active = False
+        self.custom_rec_start_stream_time = 0.0
+        self.custom_rec_start_wall_time = 0.0
+
         self._seed_buckets()
 
     def _seed_buckets(self):
@@ -443,6 +448,103 @@ class CreatorSession:
         if self.recorder and self.is_running and self.recorder.is_alive():
             return self.recorder.get_elapsed_stream_time()
         return 0.0
+
+    def get_custom_rec_elapsed(self) -> int:
+        if self.custom_rec_active and self.custom_rec_start_wall_time > 0:
+            return int(time.time() - self.custom_rec_start_wall_time)
+        return 0
+
+    def start_custom_record(self) -> tuple[bool, str]:
+        if self.custom_rec_active:
+            return True, f"Custom recording already active for {self.name}."
+
+        # If primary stream recording isn't running yet, start it in the background
+        if not (self.is_running and self.recorder and self.recorder.is_alive()):
+            started, msg = self.start(min_messages=self.min_messages, quality=self.quality, whisper_model=self.whisper_model)
+            if not started:
+                return False, f"Could not connect stream for {self.name}: {msg}"
+
+        self.custom_rec_active = True
+        self.custom_rec_start_stream_time = self.get_elapsed()
+        self.custom_rec_start_wall_time = time.time()
+        self.manager.add_log(f"🔴 [{self.name}] Custom Video Recording STARTED at stream time {self.custom_rec_start_stream_time:.1f}s (Point A marked).")
+        return True, f"Custom recording started for {self.name} (Point A marked)."
+
+    def stop_custom_record(self) -> tuple[bool, str]:
+        if not self.custom_rec_active:
+            return False, f"No active custom recording for {self.name}."
+
+        self.custom_rec_active = False
+        start_t = self.custom_rec_start_stream_time
+        end_t = self.get_elapsed()
+        dur = max(3.0, end_t - start_t)
+        now_wall = time.time()
+
+        self.manager.add_log(f"⏹️ [{self.name}] Custom Video Recording STOPPED (Point B marked, duration: {dur:.1f}s). Video is saving in background...")
+
+        threading.Thread(
+            target=self._process_custom_recording,
+            args=(start_t, end_t, dur, now_wall),
+            daemon=True,
+            name=f"CustomRec_{self.name}",
+        ).start()
+
+        return True, f"Custom video segment ({int(dur)}s) saved! Processing and subtitles are generating in background."
+
+    def _process_custom_recording(self, start_t: float, end_t: float, duration: float, wall_t: float):
+        time.sleep(4.0)
+
+        if not self.recorder or not self.recorder.rec_path or not self.recorder.rec_path.exists():
+            self.manager.add_log(f"[Custom Rec Error] Recording source for {self.name} not found.")
+            return
+
+        rec_path = self.recorder.rec_path
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_dir = CLIPS_DIR / self.name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        out_mp4 = target_dir / f"{self.name}_{timestamp}_custom_record_{int(duration)}s.mp4"
+        out_srt = out_mp4.with_suffix(".srt")
+
+        self.manager.add_log(f"🎬 [{self.name}] Exporting custom recording ({duration:.1f}s) to {out_mp4.name}...")
+
+        filter_complex = (
+            "[0:v]scale=270:480:force_original_aspect_ratio=increase,"
+            "crop=270:480,"
+            "boxblur=8:2,"
+            "scale=1080:1920[bg];"
+            "[0:v]scale=1080:-2[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[v]"
+        )
+
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", f"{start_t:.2f}",
+            "-to", f"{end_t:.2f}",
+            "-i", str(rec_path),
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "22",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            str(out_mp4),
+        ]
+
+        try:
+            res = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if res.returncode == 0 and out_mp4.exists():
+                size_mb = out_mp4.stat().st_size / (1024 * 1024)
+                self.manager.add_log(f"✅ [{self.name}] Custom recording ready: {out_mp4.name} ({size_mb:.2f} MB)!")
+                if self.clip_processor and self.clip_processor.enable_whisper:
+                    self.clip_processor._generate_subtitles(out_mp4, out_srt, clip_id=999)
+            else:
+                self.manager.add_log(f"[FFmpeg Error] Custom recording failed: {res.stderr[-300:]}")
+        except Exception as e:
+            self.manager.add_log(f"[Custom Recording Error] {e}")
 
     def tick(self, now: float):
         elapsed_in_bucket = now - self.last_bucket_time
@@ -765,6 +867,26 @@ class WatcherManager:
                 session = self.get_session(self.active_creator)
             return session.manual_clip()
 
+    def start_custom_record(self, target: Optional[str] = None):
+        with self.lock:
+            if target:
+                session = self.get_session(target)
+            else:
+                if not self.active_creator:
+                    return False, "No active creator selected."
+                session = self.get_session(self.active_creator)
+            return session.start_custom_record()
+
+    def stop_custom_record(self, target: Optional[str] = None):
+        with self.lock:
+            if target:
+                session = self.get_session(target)
+            else:
+                if not self.active_creator:
+                    return False, "No active creator selected."
+                session = self.get_session(self.active_creator)
+            return session.stop_custom_record()
+
     def get_status(self):
         with self.lock:
             active_session = self.get_session(self.active_creator) if self.active_creator else None
@@ -784,6 +906,8 @@ class WatcherManager:
                 whisper_model = active_session.whisper_model
                 chart_buckets = list(active_session.bucket_history)
                 current_live_count = active_session.current_live_count
+                custom_rec_active = active_session.custom_rec_active
+                custom_rec_elapsed = active_session.get_custom_rec_elapsed()
             else:
                 is_running = False
                 is_monitoring_chat = False
@@ -797,6 +921,8 @@ class WatcherManager:
                 whisper_model = "tiny"
                 chart_buckets = []
                 current_live_count = 0
+                custom_rec_active = False
+                custom_rec_elapsed = 0
 
             # Scan clips directory recursively for per-creator folders
             clips = []
@@ -839,6 +965,8 @@ class WatcherManager:
             for c_name, info in self.creators.items():
                 s = self.sessions.get(c_name.lower())
                 c_is_recording = bool(s and s.is_running and s.recorder and s.recorder.is_alive())
+                c_is_custom_recording = bool(s and s.custom_rec_active)
+                c_custom_rec_elapsed = s.get_custom_rec_elapsed() if s else 0
                 is_active = (self.active_creator.lower() == c_name.lower())
                 is_live = self.is_creator_live(c_name, info.get("platform", "twitch"))
                 creators_list.append({
@@ -850,6 +978,8 @@ class WatcherManager:
                     "is_active": is_active,
                     "is_live": is_live,
                     "is_recording": c_is_recording,
+                    "is_custom_recording": c_is_custom_recording,
+                    "custom_rec_elapsed": c_custom_rec_elapsed,
                 })
 
             # Group into recorded sessions
@@ -916,6 +1046,8 @@ class WatcherManager:
                 "current_live_count": current_live_count,
                 "recording_count": len(recording_sessions),
                 "recording_creators": recording_names,
+                "custom_rec_active": custom_rec_active,
+                "custom_rec_elapsed": custom_rec_elapsed,
                 "logs": list(self.log_messages),
                 "creators": creators_list,
                 "clips": clips,
@@ -979,6 +1111,34 @@ async def api_clip_now(request: Request):
     except Exception:
         pass
     success, msg = manager.manual_clip(target=target)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.post("/api/custom-record/start")
+async def api_custom_record_start(request: Request):
+    target = None
+    try:
+        body = await request.json()
+        target = body.get("target")
+    except Exception:
+        pass
+    success, msg = manager.start_custom_record(target=target)
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.post("/api/custom-record/stop")
+async def api_custom_record_stop(request: Request):
+    target = None
+    try:
+        body = await request.json()
+        target = body.get("target")
+    except Exception:
+        pass
+    success, msg = manager.stop_custom_record(target=target)
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"status": "ok", "message": msg}
@@ -1402,7 +1562,7 @@ def index_page():
           </div>
         </div>
 
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2.5 flex-wrap">
           <!-- Manual Clip Action Button -->
           <button id="btn-manual-clip-streamer" onclick="triggerManualClip()"
             class="bg-white hover:bg-neutral-200 text-black font-bold px-4 py-1.5 rounded-xl text-xs flex items-center gap-2 cursor-pointer shadow-md shadow-white/10 transition">
@@ -1410,7 +1570,22 @@ def index_page():
             <span id="label-clip-button">Cut Clip Now (Manual)</span>
           </button>
 
-          <!-- Start / Stop Watcher -->
+          <!-- Custom Range Recording (Point A -> Point B) -->
+          <button id="btn-custom-rec-start" onclick="toggleCustomRecording()"
+            class="bg-[#18181b] hover:bg-[#27272a] text-neutral-200 hover:text-white border border-[#27272a] hover:border-neutral-500 font-bold px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-2 cursor-pointer shadow-md transition"
+            title="Record custom video from Point A to Point B in the background">
+            <span class="w-2 h-2 rounded-full bg-red-600"></span>
+            <span id="label-custom-rec">⏺ Custom Record (A ➔ B)</span>
+          </button>
+          
+          <button id="btn-custom-rec-stop" onclick="toggleCustomRecording()"
+            class="hidden bg-red-600 hover:bg-red-700 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-2 cursor-pointer shadow-lg shadow-red-600/30 transition animate-pulse"
+            title="Click to stop and save custom video segment (Point B)">
+            <span class="w-2 h-2 rounded-full bg-white animate-ping"></span>
+            <span id="label-custom-rec-stop">⏹ Stop & Save Segment (00:00)</span>
+          </button>
+
+          <!-- Start / Stop Primary Watcher -->
           <button id="btn-streamer-start" onclick="startStreamerWatcher()"
             class="bg-neutral-100 hover:bg-white text-black font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer">
             ▶ Start Recording
@@ -2033,6 +2208,40 @@ def index_page():
       }
     }
 
+    // Custom Range Recording Action (Point A to Point B)
+    async function toggleCustomRecording() {
+      const curCreatorObj = allCreatorsData.find(c => c.name.toLowerCase() === (activeCreator || '').toLowerCase());
+      const isCustomRecActive = curCreatorObj ? curCreatorObj.is_custom_recording : false;
+
+      if (!isCustomRecActive) {
+        // Start Point A
+        try {
+          const res = await fetch('/api/custom-record/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: activeCreator })
+          });
+          const data = await res.json();
+          pollStatus();
+        } catch (err) {
+          console.error("Start custom rec error:", err);
+        }
+      } else {
+        // Stop Point B and save
+        try {
+          const res = await fetch('/api/custom-record/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: activeCreator })
+          });
+          const data = await res.json();
+          pollStatus();
+        } catch (err) {
+          console.error("Stop custom rec error:", err);
+        }
+      }
+    }
+
     // Video File Upload Support (Drag & Drop or File Picker)
     async function handleFileUpload(event) {
       const file = event.target.files[0];
@@ -2148,6 +2357,26 @@ def index_page():
         else liveBadge.classList.add('hidden');
       }
 
+      // Update Custom Range Recording button state
+      const btnCustomStart = document.getElementById('btn-custom-rec-start');
+      const btnCustomStop = document.getElementById('btn-custom-rec-stop');
+      const labelCustomStop = document.getElementById('label-custom-rec-stop');
+      const isCustomRecActive = curCreatorObj ? curCreatorObj.is_custom_recording : (data.custom_rec_active || false);
+      const customSec = curCreatorObj ? (curCreatorObj.custom_rec_elapsed || 0) : (data.custom_rec_elapsed || 0);
+
+      if (btnCustomStart && btnCustomStop) {
+        if (isCustomRecActive) {
+          btnCustomStart.classList.add('hidden');
+          btnCustomStop.classList.remove('hidden');
+          const m = String(Math.floor(customSec / 60)).padStart(2, '0');
+          const s = String(customSec % 60).padStart(2, '0');
+          if (labelCustomStop) labelCustomStop.textContent = `⏹ Stop & Save Segment (${m}:${s})`;
+        } else {
+          btnCustomStart.classList.remove('hidden');
+          btnCustomStop.classList.add('hidden');
+        }
+      }
+
       // 3. Chart update
       if (data.bucket_history && data.bucket_history.length > 0) {
         if (!chartInstance) initChart();
@@ -2221,6 +2450,11 @@ def index_page():
               <span class="truncate text-xs font-semibold">${escapeHtml(c.name)}</span>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
+              ${c.is_custom_recording ? `
+                <span class="bg-red-700 text-white font-black text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider shadow-sm animate-pulse flex items-center gap-1" title="Custom recording in progress (Point A to Point B)">
+                  <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>A➔B
+                </span>
+              ` : ''}
               ${c.is_recording ? `
                 <span class="bg-red-600 text-white font-black text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider shadow-sm animate-pulse flex items-center gap-1" title="Recording & clipping in progress">
                   <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>REC
