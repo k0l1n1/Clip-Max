@@ -1,28 +1,4 @@
 {
-  "IShowSpeed": {
-    "name": "IShowSpeed",
-    "platform": "youtube",
-    "handle": "https://www.youtube.com/@IShowSpeed/live",
-    "avatar": "/static/avatars/ishowspeed.png"
-  },
-  "Jynxzi": {
-    "name": "Jynxzi",
-    "platform": "twitch",
-    "handle": "jynxzi",
-    "avatar": "/static/avatars/jynxzi.png"
-  },
-  "KaiCenat": {
-    "name": "KaiCenat",
-    "platform": "twitch",
-    "handle": "kaicenat",
-    "avatar": "/static/avatars/kaicenat.png"
-  },
-  "MrBeast": {
-    "name": "MrBeast",
-    "platform": "youtube",
-    "handle": "MrBeast",
-    "avatar": "https://unavatar.io/youtube/MrBeast"
-  },
   "typicalgamer": {
     "name": "typicalgamer",
     "platform": "twitch",

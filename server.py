@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-clip-watcher Studio Web Dashboard:
-- Sidebar styled exactly like the user's reference:
-  - Orange 'Home' button
-  - 'All videos' with clip count badge
-  - 'Creators' section with circular avatars
-  - '⊕ New creator' button and modal to add streamers
+Clip Max - Viral Shorts Studio Web Dashboard:
+- Clean, modern Black and White monochrome theme
+- Sidebar styled with Creators Hub:
+  - 'Home' view with drag-and-drop link/video upload
+  - 'All videos' review grid with 9:16 vertical blurred cards
+  - 'Creators' section with circular avatars & delete option
+  - '⊕ New creator' modal to add streamers
 - Per-streamer clip folders (clips/<creator>/)
 - 9:16 vertical blurred background layout matching TikTok/Shorts
-- Full replay controls (↺ Replay, Loop, Play/Pause, Bold Yellow Subtitles)
+- Full replay controls (↺ Replay, Loop, Play/Pause, Subtitles overlay)
 """
 
 import argparse
@@ -775,56 +776,56 @@ def index_page():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Peak Cut - Clip Studio</title>
+  <title>Clip Max - Viral Shorts Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body { background-color: #0e0d0b; color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: #09090b; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     .custom-scroll::-webkit-scrollbar { width: 5px; }
-    .custom-scroll::-webkit-scrollbar-thumb { background: #292524; border-radius: 3px; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
     .hero-radial {
-      background: radial-gradient(ellipse at 50% 25%, rgba(254, 215, 170, 0.45) 0%, rgba(255, 255, 255, 0) 70%);
+      background: radial-gradient(ellipse at 50% 25%, rgba(255, 255, 255, 0.9) 0%, rgba(244, 244, 245, 1) 70%);
     }
   </style>
 </head>
-<body class="h-screen flex overflow-hidden select-none">
+<body class="h-screen flex overflow-hidden select-none bg-black text-white">
 
-  <!-- LEFT SIDEBAR: Peak Cut Brand + Creators Hub -->
-  <aside class="w-64 bg-[#140e0a] border-r border-[#241c16] flex flex-col p-3 space-y-3 shrink-0 overflow-y-auto custom-scroll">
+  <!-- LEFT SIDEBAR: Clip Max Brand + Creators Hub -->
+  <aside class="w-64 bg-[#0a0a0a] border-r border-[#27272a] flex flex-col p-3 space-y-3 shrink-0 overflow-y-auto custom-scroll">
     
     <!-- Brand Header -->
     <div class="flex items-center justify-between px-2 pt-1 pb-1">
       <div class="flex items-center gap-2.5">
-        <div class="w-8 h-8 rounded-xl bg-[#f97316] flex items-center justify-center text-white text-base shadow-md shadow-orange-500/25 font-bold">
-          🐱
+        <div class="w-8 h-8 rounded-xl bg-white flex items-center justify-center text-black text-base shadow-md shadow-white/10 font-black">
+          ⚡
         </div>
-        <span class="font-extrabold text-white text-base tracking-tight">Peak Cut</span>
+        <span class="font-black text-white text-base tracking-tight">Clip Max</span>
       </div>
-      <button class="text-stone-500 hover:text-stone-300 transition p-1" title="Toggle sidebar">
+      <button class="text-neutral-500 hover:text-white transition p-1" title="Toggle sidebar">
         <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8 14H5V7h6v10zm8 0h-6V7h6v10z"/></svg>
       </button>
     </div>
 
-    <!-- Home Button (Vibrant Orange active) -->
+    <!-- Home Button (Pure White active) -->
     <button onclick="switchView('HOME')" id="nav-btn-home"
-      class="w-full bg-[#f97316] hover:bg-[#ea580c] text-[#0d0c0a] font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-orange-500/20 transition cursor-pointer">
+      class="w-full bg-white hover:bg-neutral-200 text-black font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-white/10 transition cursor-pointer">
       <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
       <span class="text-sm font-bold tracking-tight">Home</span>
     </button>
 
     <!-- All Videos Button with Count Badge -->
     <button onclick="switchView('ALL')" id="nav-btn-all"
-      class="w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]">
+      class="w-full bg-[#121214] hover:bg-[#1c1c20] text-neutral-300 font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#27272a]">
       <div class="flex items-center gap-3">
-        <svg class="w-5 h-5 fill-stone-300" viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+        <svg class="w-5 h-5 fill-neutral-400" viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
         <span class="font-semibold text-sm">All videos</span>
       </div>
-      <span id="all-videos-count-badge" class="font-mono text-xs bg-[#392f26] text-stone-200 font-bold px-2.5 py-0.5 rounded-full">0</span>
+      <span id="all-videos-count-badge" class="font-mono text-xs bg-[#27272a] text-neutral-200 font-bold px-2.5 py-0.5 rounded-full">0</span>
     </button>
 
     <!-- Creators Section -->
     <div class="pt-2 space-y-2">
-      <div class="px-2 text-[#8b8075] text-xs font-semibold tracking-wide">
+      <div class="px-2 text-neutral-400 text-xs font-semibold tracking-wide">
         Creators
       </div>
 
@@ -835,8 +836,8 @@ def index_page():
 
       <!-- + New Creator Button -->
       <button onclick="openNewCreatorModal()"
-        class="w-full text-left px-2.5 py-2.5 rounded-xl text-sm font-semibold text-white hover:bg-[#201a15] transition flex items-center gap-3.5 cursor-pointer group">
-        <div class="w-7 h-7 rounded-full border border-stone-500 flex items-center justify-center text-stone-400 group-hover:border-orange-400 group-hover:text-orange-400 transition">
+        class="w-full text-left px-2.5 py-2.5 rounded-xl text-sm font-semibold text-white hover:bg-[#18181b] transition flex items-center gap-3.5 cursor-pointer group">
+        <div class="w-7 h-7 rounded-full border border-neutral-600 flex items-center justify-center text-neutral-400 group-hover:border-white group-hover:text-white transition">
           <span class="text-sm font-light leading-none mb-0.5">⊕</span>
         </div>
         <span>New creator</span>
@@ -868,7 +869,7 @@ def index_page():
           </a>
 
           <a href="https://github.com/k0l1n1/Clipper" target="_blank"
-            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold bg-[#f97316] hover:bg-[#ea580c] text-white shadow-md shadow-orange-500/20 transition">
+            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold bg-black hover:bg-neutral-800 text-white shadow-md shadow-black/10 transition">
             <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
             <span>Follow me</span>
           </a>
@@ -886,7 +887,7 @@ def index_page():
 
         <!-- Main Input Card with Drag & Drop -->
         <div id="drop-zone"
-          class="bg-white rounded-3xl border border-neutral-200/90 shadow-2xl shadow-orange-500/10 p-4 flex flex-col gap-3 transition-all">
+          class="bg-white rounded-3xl border border-neutral-200/90 shadow-2xl shadow-black/5 p-4 flex flex-col gap-3 transition-all">
           
           <!-- Input Row -->
           <div class="flex items-center gap-3 px-2 pt-1 pb-1">
@@ -929,7 +930,7 @@ def index_page():
             <div class="flex items-center gap-3">
               <span class="text-xs text-neutral-400 italic hidden sm:inline">or drop a video file here</span>
               <button onclick="makeClipsFromHome()"
-                class="bg-[#f97316] hover:bg-[#ea580c] text-white font-bold px-5 py-2.5 rounded-2xl text-xs flex items-center gap-2 shadow-lg shadow-orange-500/25 transition cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]">
+                class="bg-black hover:bg-neutral-800 text-white font-bold px-5 py-2.5 rounded-2xl text-xs flex items-center gap-2 shadow-lg shadow-black/20 transition cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]">
                 <span>✂</span><span>Make clips</span>
               </button>
             </div>
@@ -968,25 +969,25 @@ def index_page():
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto w-full z-10 pt-4">
         
         <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
-          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">((•))</div>
+          <div class="w-7 h-7 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-900 font-bold text-xs">((•))</div>
           <div id="stat-recording" class="text-2xl font-black text-neutral-900">0</div>
           <div class="text-xs font-semibold text-neutral-400">Recording now</div>
         </div>
 
         <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
-          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">✂</div>
+          <div class="w-7 h-7 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-900 font-bold text-xs">✂</div>
           <div id="stat-clips-today" class="text-2xl font-black text-neutral-900">0</div>
           <div class="text-xs font-semibold text-neutral-400">Clips today</div>
         </div>
 
         <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
-          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">✈</div>
+          <div class="w-7 h-7 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-900 font-bold text-xs">✈</div>
           <div class="text-2xl font-black text-neutral-900">0</div>
           <div class="text-xs font-semibold text-neutral-400">Posted today</div>
         </div>
 
         <div class="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-sm flex flex-col gap-1.5">
-          <div class="w-7 h-7 rounded-full bg-orange-100/80 flex items-center justify-center text-orange-600 font-bold text-xs">⏱</div>
+          <div class="w-7 h-7 rounded-full bg-neutral-100 flex items-center justify-center text-neutral-900 font-bold text-xs">⏱</div>
           <div class="text-2xl font-black text-neutral-900">0</div>
           <div class="text-xs font-semibold text-neutral-400">Waiting to post</div>
         </div>
@@ -998,47 +999,47 @@ def index_page():
     <!-- ============================================================== -->
     <!-- VIEW 2: STREAMER PROFILE & STUDIO (Live Stream + 9:16 Player) -->
     <!-- ============================================================== -->
-    <div id="view-streamer" class="hidden flex-1 flex flex-col overflow-hidden bg-[#0d0c0b]">
+    <div id="view-streamer" class="hidden flex-1 flex flex-col overflow-hidden bg-[#09090b]">
 
       <!-- Streamer Profile Header Bar -->
-      <div class="px-6 py-2.5 bg-[#141210] border-b border-[#221f1c] flex items-center justify-between shrink-0">
+      <div class="px-6 py-2.5 bg-[#0a0a0a] border-b border-[#27272a] flex items-center justify-between shrink-0">
         <div class="flex items-center gap-3">
           <img id="streamer-avatar-header" src="/static/avatars/ishowspeed.png"
-            class="w-9 h-9 rounded-full object-cover border-2 border-orange-500 shadow-md" />
+            class="w-9 h-9 rounded-full object-cover border-2 border-white shadow-md" />
           <div>
             <div class="flex items-center gap-2">
               <h2 id="streamer-name-header" class="text-sm font-bold text-white tracking-wide">Streamer Profile</h2>
-              <span id="streamer-platform-header" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-orange-500/20 text-orange-400 uppercase">TWITCH</span>
-              <div id="streamer-status-pill" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-stone-900 text-stone-400 border border-stone-800">
-                <span class="w-2 h-2 rounded-full bg-stone-600"></span>
+              <span id="streamer-platform-header" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-neutral-800 text-white uppercase border border-neutral-700">TWITCH</span>
+              <div id="streamer-status-pill" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-neutral-900 text-neutral-300 border border-neutral-800">
+                <span class="w-2 h-2 rounded-full bg-neutral-600"></span>
                 <span>Standby</span>
               </div>
             </div>
-            <p id="streamer-url-header" class="text-[11px] text-stone-400 font-mono truncate max-w-sm">No active stream</p>
+            <p id="streamer-url-header" class="text-[11px] text-neutral-400 font-mono truncate max-w-sm">No active stream</p>
           </div>
         </div>
 
         <div class="flex items-center gap-2.5">
           <!-- Manual Clip Action Button -->
           <button id="btn-manual-clip-streamer" onclick="triggerManualClip()"
-            class="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 text-slate-950 font-bold px-4 py-1.5 rounded-xl text-xs flex items-center gap-2 cursor-pointer shadow-md shadow-orange-500/25 transition">
+            class="bg-white hover:bg-neutral-200 text-black font-bold px-4 py-1.5 rounded-xl text-xs flex items-center gap-2 cursor-pointer shadow-md shadow-white/10 transition">
             <span class="text-sm">✂️</span>
             <span id="label-clip-button">Cut Clip Now (Manual)</span>
           </button>
 
           <!-- Start / Stop Watcher -->
           <button id="btn-streamer-start" onclick="startStreamerWatcher()"
-            class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer">
+            class="bg-neutral-100 hover:bg-white text-black font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer">
             ▶ Start Recording
           </button>
           <button id="btn-streamer-stop" onclick="stopWatcher()"
-            class="hidden bg-red-600 hover:bg-red-500 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer">
+            class="hidden bg-neutral-800 hover:bg-neutral-700 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition cursor-pointer border border-neutral-600">
             ⏹ Stop Recording
           </button>
 
           <!-- Remove Creator Button -->
           <button id="btn-remove-streamer" onclick="removeCurrentCreator()"
-            class="text-stone-400 hover:text-red-400 border border-stone-800 hover:border-red-500/40 px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 transition cursor-pointer" title="Remove this creator">
+            class="text-neutral-400 hover:text-white border border-neutral-800 hover:border-neutral-600 px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 transition cursor-pointer" title="Remove this creator">
             <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
             <span>Remove</span>
           </button>
@@ -1052,52 +1053,52 @@ def index_page():
         <div class="xl:col-span-8 flex flex-col gap-5">
           
           <!-- Stream Video Embed -->
-          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl overflow-hidden shadow-xl flex flex-col">
-            <div class="px-4 py-2 bg-[#141210] border-b border-[#221f1c] flex items-center justify-between text-xs">
-              <span class="text-stone-300 font-medium flex items-center gap-2">
-                <span id="player-live-dot" class="w-2 h-2 rounded-full bg-stone-600"></span>
+          <div class="bg-[#121214] border border-[#27272a] rounded-2xl overflow-hidden shadow-xl flex flex-col">
+            <div class="px-4 py-2 bg-[#09090b] border-b border-[#27272a] flex items-center justify-between text-xs">
+              <span class="text-neutral-300 font-medium flex items-center gap-2">
+                <span id="player-live-dot" class="w-2 h-2 rounded-full bg-neutral-600"></span>
                 <span>Live Stream Feed</span>
               </span>
-              <span id="elapsed-timer" class="font-mono text-orange-400 text-xs">00:00:00</span>
+              <span id="elapsed-timer" class="font-mono text-white text-xs font-bold">00:00:00</span>
             </div>
 
             <div class="relative w-full aspect-video bg-black flex items-center justify-center">
-              <div id="stream-placeholder" class="text-center p-8 text-stone-500 flex flex-col items-center gap-2">
+              <div id="stream-placeholder" class="text-center p-8 text-neutral-500 flex flex-col items-center gap-2">
                 <span class="text-4xl opacity-30">📺</span>
-                <p class="text-xs text-stone-400">Click <strong class="text-orange-400">▶ Start Recording</strong> above to connect live.</p>
+                <p class="text-xs text-neutral-400">Click <strong class="text-white">▶ Start Recording</strong> above to connect live.</p>
               </div>
               <iframe id="stream-frame" src="" class="w-full h-full border-0 hidden" allowfullscreen="true"></iframe>
             </div>
           </div>
 
           <!-- Real-Time Chat Frequency Chart -->
-          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+          <div class="bg-[#121214] border border-[#27272a] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
                 <span class="text-base">📈</span>
-                <h3 class="font-semibold text-xs text-stone-200">Chat Velocity (10s Buckets)</h3>
-                <span id="chat-live-badge" class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-950/80 text-emerald-400 border border-emerald-800/80">
-                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <h3 class="font-semibold text-xs text-neutral-200">Chat Velocity (10s Buckets)</h3>
+                <span id="chat-live-badge" class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono bg-neutral-900 text-neutral-200 border border-neutral-700">
+                  <span class="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
                   <span id="chat-live-channel">Live Chat</span>
                 </span>
               </div>
               <div class="flex items-center gap-3 text-xs font-mono text-[11px]">
-                <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-orange-500"></span><span class="text-stone-400">Msgs</span></div>
-                <div class="flex items-center gap-1"><span class="w-3 h-0.5 bg-emerald-400"></span><span class="text-stone-400">Median</span></div>
-                <div class="flex items-center gap-1"><span class="w-3 h-0.5 bg-red-500"></span><span class="text-stone-400">Spike</span></div>
+                <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-white"></span><span class="text-neutral-400">Msgs</span></div>
+                <div class="flex items-center gap-1"><span class="w-3 h-0.5 bg-neutral-400"></span><span class="text-neutral-400">Median</span></div>
+                <div class="flex items-center gap-1"><span class="w-3 h-0.5 bg-neutral-500"></span><span class="text-neutral-400">Spike</span></div>
               </div>
             </div>
             <div class="h-40 w-full"><canvas id="chatChart"></canvas></div>
           </div>
 
           <!-- Terminal Activity Log -->
-          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-3.5 shadow-xl flex flex-col gap-2">
-            <div class="flex items-center justify-between text-xs text-stone-400 border-b border-[#221f1c] pb-1.5">
-              <span class="font-medium text-stone-200">Activity Log</span>
-              <span class="font-mono text-[10px] text-stone-500">Auto-scrolling</span>
+          <div class="bg-[#121214] border border-[#27272a] rounded-2xl p-3.5 shadow-xl flex flex-col gap-2">
+            <div class="flex items-center justify-between text-xs text-neutral-400 border-b border-[#27272a] pb-1.5">
+              <span class="font-medium text-neutral-200">Activity Log</span>
+              <span class="font-mono text-[10px] text-neutral-500">Auto-scrolling</span>
             </div>
-            <div id="log-box" class="h-24 overflow-y-auto font-mono text-xs text-stone-300 space-y-1 custom-scroll bg-[#0e0d0b] p-2 rounded-xl border border-stone-800/80">
-              <div class="text-stone-500">[System] Studio ready.</div>
+            <div id="log-box" class="h-24 overflow-y-auto font-mono text-xs text-neutral-300 space-y-1 custom-scroll bg-black p-2 rounded-xl border border-neutral-800">
+              <div class="text-neutral-500">[System] Clip Max Studio ready.</div>
             </div>
           </div>
 
@@ -1106,22 +1107,22 @@ def index_page():
         <!-- Right Column: 9:16 Vertical Video Player (4.5 cols) -->
         <div class="xl:col-span-4 flex flex-col gap-5">
           
-          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+          <div class="bg-[#121214] border border-[#27272a] rounded-2xl p-4 shadow-xl flex flex-col gap-3">
             <div class="flex items-center justify-between">
-              <h3 class="font-semibold text-xs text-stone-200 flex items-center gap-2">
+              <h3 class="font-semibold text-xs text-neutral-200 flex items-center gap-2">
                 <span>🎬</span>
                 <span>9:16 Vertical Player</span>
               </h3>
-              <span id="preview-badge" class="text-xs font-mono text-orange-400 truncate max-w-[160px]">Select a clip</span>
+              <span id="preview-badge" class="text-xs font-mono text-neutral-400 truncate max-w-[160px]">Select a clip</span>
             </div>
 
             <!-- Vertical Video Container (9:16) -->
-            <div class="relative w-full aspect-[9/16] max-h-[400px] bg-black rounded-2xl border border-stone-800 overflow-hidden mx-auto flex items-center justify-center group shadow-2xl">
+            <div class="relative w-full aspect-[9/16] max-h-[400px] bg-black rounded-2xl border border-neutral-800 overflow-hidden mx-auto flex items-center justify-center group shadow-2xl">
               <video id="clip-player" playsinline class="w-full h-full object-contain hidden"></video>
 
-              <div id="player-placeholder" class="text-center p-6 text-stone-500 flex flex-col items-center gap-2">
+              <div id="player-placeholder" class="text-center p-6 text-neutral-500 flex flex-col items-center gap-2">
                 <span class="text-3xl opacity-30">📱</span>
-                <p class="text-xs text-stone-400">Select any clip below to play &amp; replay.</p>
+                <p class="text-xs text-neutral-400">Select any clip below to play &amp; replay.</p>
               </div>
 
               <!-- Top Floating Header Badge (matching reference) -->
@@ -1131,9 +1132,9 @@ def index_page():
                 </div>
               </div>
 
-              <!-- Subtitle Banner Overlay (Bold Yellow with Heavy Black Outline in lower blur area) -->
+              <!-- Subtitle Banner Overlay (Clean High-Contrast Monochrome) -->
               <div id="sub-overlay" class="hidden absolute bottom-5 inset-x-2 text-center pointer-events-none z-20 transition-all">
-                <span id="sub-text" class="inline-block text-[#ffe500] font-black text-base tracking-wider uppercase px-2 py-0.5"
+                <span id="sub-text" class="inline-block text-white font-black text-base tracking-wider uppercase px-2 py-0.5"
                       style="text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95);">
                   OH!
                 </span>
@@ -1144,42 +1145,42 @@ def index_page():
             <div id="replay-controls" class="hidden flex flex-col gap-2 pt-1">
               
               <!-- Seekbar & Time Display -->
-              <div class="flex items-center gap-2 text-[10px] font-mono text-stone-400 px-1">
+              <div class="flex items-center gap-2 text-[10px] font-mono text-neutral-400 px-1">
                 <span id="time-current">0:00</span>
                 <input type="range" id="seek-bar" min="0" max="100" value="0" step="0.1" oninput="onSeekChange(this.value)"
-                  class="flex-1 accent-orange-500 h-1.5 bg-[#25201b] rounded-lg cursor-pointer" />
+                  class="flex-1 accent-white h-1.5 bg-[#252528] rounded-lg cursor-pointer" />
                 <span id="time-duration">0:00</span>
               </div>
 
               <!-- Playback Control Icons matching reference bottom bar -->
               <div class="flex items-center justify-between px-2 pt-0.5">
-                <button onclick="shuffleClip()" title="Shuffle" class="text-stone-400 hover:text-white transition p-1 cursor-pointer">
+                <button onclick="shuffleClip()" title="Shuffle" class="text-neutral-400 hover:text-white transition p-1 cursor-pointer">
                   <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
                 </button>
 
-                <button onclick="prevClip()" title="Previous" class="text-stone-300 hover:text-white transition p-1 cursor-pointer">
+                <button onclick="prevClip()" title="Previous" class="text-neutral-300 hover:text-white transition p-1 cursor-pointer">
                   <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
                 </button>
 
-                <button onclick="seekRelative(-10)" title="Rewind 10s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
+                <button onclick="seekRelative(-10)" title="Rewind 10s" class="text-neutral-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
                   <span>⟲</span><span>10</span>
                 </button>
 
-                <!-- Center Glowing Play/Pause Gradient Circle -->
+                <!-- Center Glowing Play/Pause White Circle -->
                 <button onclick="togglePlay()" id="btn-main-play" title="Play/Pause"
-                  class="w-11 h-11 rounded-full bg-gradient-to-tr from-[#9333ea] via-[#ec4899] to-[#f97316] hover:scale-105 active:scale-95 transition-transform flex items-center justify-center text-white shadow-lg shadow-pink-500/25 cursor-pointer">
+                  class="w-11 h-11 rounded-full bg-white hover:bg-neutral-200 text-black hover:scale-105 active:scale-95 transition-transform flex items-center justify-center shadow-lg shadow-white/10 cursor-pointer">
                   <span id="main-play-icon" class="text-base font-bold ml-0.5">▶</span>
                 </button>
 
-                <button onclick="seekRelative(30)" title="Forward 30s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
+                <button onclick="seekRelative(30)" title="Forward 30s" class="text-neutral-300 hover:text-white flex items-center gap-0.5 text-[11px] font-mono font-bold transition p-1 cursor-pointer">
                   <span>30</span><span>⟳</span>
                 </button>
 
-                <button onclick="nextClip()" title="Next" class="text-stone-300 hover:text-white transition p-1 cursor-pointer">
+                <button onclick="nextClip()" title="Next" class="text-neutral-300 hover:text-white transition p-1 cursor-pointer">
                   <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
                 </button>
 
-                <button onclick="toggleLoop()" id="btn-player-loop" title="Toggle Loop" class="text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer">
+                <button onclick="toggleLoop()" id="btn-player-loop" title="Toggle Loop" class="text-neutral-400 hover:text-white transition p-1 cursor-pointer">
                   <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
                 </button>
               </div>
@@ -1187,11 +1188,11 @@ def index_page():
             </div>
 
             <!-- Download Action Links -->
-            <div id="clip-actions" class="hidden flex items-center justify-between gap-2 pt-1 border-t border-stone-800/80">
-              <a id="btn-download-video" href="#" download class="flex-1 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 text-xs py-1.5 rounded-xl text-center font-medium transition">
+            <div id="clip-actions" class="hidden flex items-center justify-between gap-2 pt-1 border-t border-neutral-800">
+              <a id="btn-download-video" href="#" download class="flex-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-200 text-xs py-1.5 rounded-xl text-center font-medium transition">
                 ⬇ Video (.mp4)
               </a>
-              <a id="btn-download-srt" href="#" download class="flex-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs py-1.5 rounded-xl text-center font-medium transition">
+              <a id="btn-download-srt" href="#" download class="flex-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-200 text-xs py-1.5 rounded-xl text-center font-medium transition">
                 ⬇ Subtitles (.srt)
               </a>
             </div>
@@ -1199,18 +1200,18 @@ def index_page():
           </div>
 
           <!-- Generated Clips List for this Streamer -->
-          <div class="bg-[#171512] border border-[#221f1c] rounded-2xl p-4 shadow-xl flex flex-col gap-3 flex-1">
-            <div class="flex items-center justify-between border-b border-[#221f1c] pb-2">
+          <div class="bg-[#121214] border border-[#27272a] rounded-2xl p-4 shadow-xl flex flex-col gap-3 flex-1">
+            <div class="flex items-center justify-between border-b border-[#27272a] pb-2">
               <div class="flex items-center gap-2">
                 <span>📁</span>
-                <h3 id="clips-heading" class="font-semibold text-xs text-stone-200">Clips</h3>
-                <span id="filtered-count-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-orange-500/20 text-orange-400">0</span>
+                <h3 id="clips-heading" class="font-semibold text-xs text-neutral-200">Clips</h3>
+                <span id="filtered-count-badge" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-neutral-800 text-neutral-300 border border-neutral-700">0</span>
               </div>
-              <span id="current-creator-filter-label" class="text-xs font-mono text-orange-400">Creator Clips</span>
+              <span id="current-creator-filter-label" class="text-xs font-mono text-neutral-400">Creator Clips</span>
             </div>
 
             <div id="clips-list" class="space-y-2 overflow-y-auto max-h-[280px] custom-scroll pr-1">
-              <div class="text-center py-8 text-xs text-stone-500">No clips yet for this creator.</div>
+              <div class="text-center py-8 text-xs text-neutral-500">No clips yet for this creator.</div>
             </div>
           </div>
 
@@ -1227,7 +1228,7 @@ def index_page():
 
       <!-- Top Input Card with Options & Drop support -->
       <div id="all-drop-zone"
-        class="bg-white rounded-3xl border border-neutral-200/90 shadow-xl shadow-orange-500/5 p-4 flex flex-col gap-3">
+        class="bg-white rounded-3xl border border-neutral-200/90 shadow-xl shadow-black/5 p-4 flex flex-col gap-3">
         
         <!-- Input Row -->
         <div class="flex items-center gap-3 px-2 pt-1 pb-1">
@@ -1262,7 +1263,7 @@ def index_page():
           <div class="flex items-center gap-3">
             <span class="text-xs text-neutral-400 italic hidden sm:inline">or drop a video file here</span>
             <button onclick="makeClipsFromAllVideos()"
-              class="bg-[#f97316] hover:bg-[#ea580c] text-white font-bold px-5 py-2.5 rounded-2xl text-xs flex items-center gap-2 shadow-lg shadow-orange-500/25 transition cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]">
+              class="bg-black hover:bg-neutral-800 text-white font-bold px-5 py-2.5 rounded-2xl text-xs flex items-center gap-2 shadow-lg shadow-black/20 transition cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]">
               <span>✂</span><span>Make clips</span>
             </button>
           </div>
@@ -1282,19 +1283,19 @@ def index_page():
 
   <!-- MODAL: 9:16 Video Review Player (Subtitles + Replay + Loop + Controls) -->
   <div id="modal-review-player" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-    <div class="bg-[#141210] border border-stone-800 rounded-3xl p-5 max-w-md w-full shadow-2xl flex flex-col gap-3.5 relative">
+    <div class="bg-[#121214] border border-neutral-800 rounded-3xl p-5 max-w-md w-full shadow-2xl flex flex-col gap-3.5 relative">
       
       <!-- Modal Header -->
-      <div class="flex items-center justify-between border-b border-stone-800/80 pb-2.5">
+      <div class="flex items-center justify-between border-b border-neutral-800 pb-2.5">
         <div class="flex items-center gap-2">
           <span class="text-base">🎬</span>
           <h3 id="modal-review-title" class="font-bold text-sm text-white truncate max-w-xs">Clip Review</h3>
         </div>
-        <button onclick="closeReviewModal()" class="text-stone-400 hover:text-white text-2xl p-1 cursor-pointer leading-none">&times;</button>
+        <button onclick="closeReviewModal()" class="text-neutral-400 hover:text-white text-2xl p-1 cursor-pointer leading-none">&times;</button>
       </div>
 
       <!-- 9:16 Vertical Video Container -->
-      <div class="relative w-full aspect-[9/16] max-h-[440px] bg-black rounded-2xl border border-stone-800 overflow-hidden mx-auto flex items-center justify-center shadow-2xl">
+      <div class="relative w-full aspect-[9/16] max-h-[440px] bg-black rounded-2xl border border-neutral-800 overflow-hidden mx-auto flex items-center justify-center shadow-2xl">
         <video id="modal-video-player" playsinline class="w-full h-full object-contain"></video>
 
         <!-- Top Floating Headline Banner -->
@@ -1306,7 +1307,7 @@ def index_page():
 
         <!-- Lower Blur Yellow Subtitle Banner -->
         <div id="modal-sub-overlay" class="hidden absolute bottom-5 inset-x-2 text-center pointer-events-none z-20 transition-all">
-          <span id="modal-sub-text" class="inline-block text-[#ffe500] font-black text-base tracking-wider uppercase px-2 py-0.5"
+          <span id="modal-sub-text" class="inline-block text-white font-black text-base tracking-wider uppercase px-2 py-0.5"
                 style="text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95);">
           </span>
         </div>
@@ -1314,42 +1315,42 @@ def index_page():
 
       <!-- Media Controls Bar -->
       <div class="flex flex-col gap-2 pt-0.5">
-        <div class="flex items-center gap-2 text-[10px] font-mono text-stone-400 px-1">
+        <div class="flex items-center gap-2 text-[10px] font-mono text-neutral-400 px-1">
           <span id="modal-time-cur">0:00</span>
           <input type="range" id="modal-seek" min="0" max="100" value="0" step="0.1" oninput="onModalSeek(this.value)"
-            class="flex-1 accent-orange-500 h-1.5 bg-[#25201b] rounded-lg cursor-pointer" />
+            class="flex-1 accent-white h-1.5 bg-[#252528] rounded-lg cursor-pointer" />
           <span id="modal-time-dur">0:00</span>
         </div>
 
         <div class="flex items-center justify-between px-3 pt-0.5">
-          <button onclick="modalSeekRel(-10)" title="Rewind 10s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-xs font-mono font-bold transition p-1 cursor-pointer">
+          <button onclick="modalSeekRel(-10)" title="Rewind 10s" class="text-neutral-300 hover:text-white flex items-center gap-0.5 text-xs font-mono font-bold transition p-1 cursor-pointer">
             <span>⟲</span><span>10</span>
           </button>
 
           <button onclick="toggleModalPlay()" id="btn-modal-play"
-            class="w-11 h-11 rounded-full bg-gradient-to-tr from-[#9333ea] via-[#ec4899] to-[#f97316] hover:scale-105 active:scale-95 transition-transform flex items-center justify-center text-white shadow-lg shadow-pink-500/25 cursor-pointer">
+            class="w-11 h-11 rounded-full bg-white hover:bg-neutral-200 text-black hover:scale-105 active:scale-95 transition-transform flex items-center justify-center shadow-lg shadow-white/20 cursor-pointer">
             <span id="modal-play-icon" class="text-base font-bold ml-0.5">▶</span>
           </button>
 
-          <button onclick="modalSeekRel(10)" title="Forward 10s" class="text-stone-300 hover:text-white flex items-center gap-0.5 text-xs font-mono font-bold transition p-1 cursor-pointer">
+          <button onclick="modalSeekRel(10)" title="Forward 10s" class="text-neutral-300 hover:text-white flex items-center gap-0.5 text-xs font-mono font-bold transition p-1 cursor-pointer">
             <span>10</span><span>⟳</span>
           </button>
 
-          <button onclick="toggleModalLoop()" id="btn-modal-loop" title="Toggle Loop" class="text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer">
+          <button onclick="toggleModalLoop()" id="btn-modal-loop" title="Toggle Loop" class="text-neutral-400 hover:text-white transition p-1 cursor-pointer">
             <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
           </button>
         </div>
       </div>
 
       <!-- Action buttons -->
-      <div class="flex items-center gap-2 pt-1 border-t border-stone-800">
-        <a id="btn-modal-dl-video" href="#" download class="flex-1 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 text-xs py-2 rounded-xl text-center font-semibold transition">
+      <div class="flex items-center gap-2 pt-1 border-t border-neutral-800">
+        <a id="btn-modal-dl-video" href="#" download class="flex-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-200 text-xs py-2 rounded-xl text-center font-semibold transition">
           ⬇ Video (.mp4)
         </a>
-        <a id="btn-modal-dl-srt" href="#" download class="flex-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs py-2 rounded-xl text-center font-semibold transition">
+        <a id="btn-modal-dl-srt" href="#" download class="flex-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-200 text-xs py-2 rounded-xl text-center font-semibold transition">
           ⬇ Subtitles (.srt)
         </a>
-        <button onclick="deleteModalClip()" title="Delete this video" class="p-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 text-xs rounded-xl font-semibold transition cursor-pointer">
+        <button onclick="deleteModalClip()" title="Delete this video" class="p-2 bg-neutral-800 hover:bg-red-600/80 border border-neutral-700 text-white text-xs rounded-xl font-semibold transition cursor-pointer">
           <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
         </button>
       </div>
@@ -1359,25 +1360,25 @@ def index_page():
 
   <!-- MODAL: + New Creator -->
   <div id="modal-new-creator" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-[#171512] border border-stone-800 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
-      <div class="flex items-center justify-between border-b border-stone-800 pb-3">
+    <div class="bg-[#121214] border border-neutral-800 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-neutral-800 pb-3">
         <h3 class="font-bold text-base text-white flex items-center gap-2">
-          <span class="text-orange-400">⊕</span>
+          <span>⊕</span>
           <span>Add New Creator</span>
         </h3>
-        <button onclick="closeNewCreatorModal()" class="text-stone-400 hover:text-white text-lg cursor-pointer">&times;</button>
+        <button onclick="closeNewCreatorModal()" class="text-neutral-400 hover:text-white text-lg cursor-pointer">&times;</button>
       </div>
 
       <div class="space-y-3">
         <div>
-          <label class="block text-xs font-semibold text-stone-300 mb-1">Creator Name:</label>
+          <label class="block text-xs font-semibold text-neutral-300 mb-1">Creator Name:</label>
           <input id="modal-input-name" type="text" placeholder="e.g. Tarik, Pokimane, Shroud"
-            class="w-full bg-[#0e0d0b] border border-stone-700 rounded-xl px-3 py-2 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-orange-500" />
+            class="w-full bg-black border border-neutral-700 rounded-xl px-3 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-white" />
         </div>
 
         <div>
-          <label class="block text-xs font-semibold text-stone-300 mb-1">Platform:</label>
-          <select id="modal-select-platform" class="w-full bg-[#0e0d0b] border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-300 focus:outline-none focus:border-orange-500">
+          <label class="block text-xs font-semibold text-neutral-300 mb-1">Platform:</label>
+          <select id="modal-select-platform" class="w-full bg-black border border-neutral-700 rounded-xl px-3 py-2 text-xs text-neutral-300 focus:outline-none focus:border-white">
             <option value="twitch">Twitch</option>
             <option value="youtube">YouTube</option>
             <option value="kick">Kick</option>
@@ -1385,15 +1386,15 @@ def index_page():
         </div>
 
         <div>
-          <label class="block text-xs font-semibold text-stone-300 mb-1">Channel Handle or URL:</label>
+          <label class="block text-xs font-semibold text-neutral-300 mb-1">Channel Handle or URL:</label>
           <input id="modal-input-handle" type="text" placeholder="e.g. tarik or https://kick.com/tarik"
-            class="w-full bg-[#0e0d0b] border border-stone-700 rounded-xl px-3 py-2 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-orange-500" />
+            class="w-full bg-black border border-neutral-700 rounded-xl px-3 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-white" />
         </div>
       </div>
 
-      <div class="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
-        <button onclick="closeNewCreatorModal()" class="px-4 py-2 rounded-xl text-xs font-medium text-stone-400 hover:text-white transition cursor-pointer">Cancel</button>
-        <button onclick="submitNewCreator()" class="bg-[#f97316] hover:bg-[#ea580c] text-slate-950 font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-orange-500/20 transition cursor-pointer">Add Creator</button>
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-neutral-800">
+        <button onclick="closeNewCreatorModal()" class="px-4 py-2 rounded-xl text-xs font-medium text-neutral-400 hover:text-white transition cursor-pointer">Cancel</button>
+        <button onclick="submitNewCreator()" class="bg-white hover:bg-neutral-200 text-black font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-white/10 transition cursor-pointer">Add Creator</button>
       </div>
     </div>
   </div>
@@ -1422,8 +1423,8 @@ def index_page():
               type: 'bar',
               label: 'Messages',
               data: [],
-              backgroundColor: 'rgba(249, 115, 22, 0.75)',
-              borderColor: 'rgba(249, 115, 22, 1)',
+              backgroundColor: 'rgba(255, 255, 255, 0.85)',
+              borderColor: 'rgba(255, 255, 255, 1)',
               borderWidth: 1,
               borderRadius: 4,
               order: 2
@@ -1432,7 +1433,7 @@ def index_page():
               type: 'line',
               label: '3m Median',
               data: [],
-              borderColor: 'rgba(52, 211, 153, 1)',
+              borderColor: 'rgba(212, 212, 216, 0.9)',
               borderWidth: 2,
               pointRadius: 0,
               fill: false,
@@ -1443,7 +1444,7 @@ def index_page():
               type: 'line',
               label: 'Threshold',
               data: [],
-              borderColor: 'rgba(239, 68, 68, 0.9)',
+              borderColor: 'rgba(255, 255, 255, 0.45)',
               borderWidth: 2,
               borderDash: [5, 5],
               pointRadius: 0,
@@ -1459,14 +1460,14 @@ def index_page():
           animation: false,
           scales: {
             x: {
-              grid: { color: 'rgba(255, 255, 255, 0.04)' },
-              ticks: { color: '#78716c', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }
+              grid: { color: 'rgba(255, 255, 255, 0.05)' },
+              ticks: { color: '#a1a1aa', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }
             },
             y: {
               beginAtZero: true,
               suggestedMax: 8,
-              grid: { color: 'rgba(255, 255, 255, 0.04)' },
-              ticks: { color: '#78716c', font: { size: 10 }, precision: 0 }
+              grid: { color: 'rgba(255, 255, 255, 0.05)' },
+              ticks: { color: '#a1a1aa', font: { size: 10 }, precision: 0 }
             }
           },
           plugins: { legend: { display: false } }
@@ -1485,13 +1486,13 @@ def index_page():
       if (viewName === 'HOME') {
         homeView.classList.remove('hidden');
         streamerView.classList.add('hidden'); document.getElementById('view-all-videos')?.classList.add('hidden');
-        homeBtn.className = "w-full bg-[#f97316] text-[#0d0c0a] font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-orange-500/20 transition cursor-pointer";
-        allBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]";
+        homeBtn.className = "w-full bg-white text-black font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm shadow-lg shadow-white/10 transition cursor-pointer";
+        allBtn.className = "w-full bg-[#121214] hover:bg-[#1c1c20] text-neutral-300 font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#27272a]";
       } else if (viewName === 'STREAMER') {
         homeView.classList.add('hidden');
         streamerView.classList.remove('hidden'); document.getElementById('view-all-videos')?.classList.add('hidden');
-        homeBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b221a]";
-        allBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#2b221a]";
+        homeBtn.className = "w-full bg-[#121214] hover:bg-[#1c1c20] text-neutral-300 font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#27272a]";
+        allBtn.className = "w-full bg-[#121214] hover:bg-[#1c1c20] text-neutral-300 font-medium px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer border border-[#27272a]";
 
         if (creatorData) {
           setupStreamerProfile(creatorData);
@@ -1503,8 +1504,8 @@ def index_page():
         const allVideosView = document.getElementById('view-all-videos');
         if (allVideosView) allVideosView.classList.remove('hidden');
 
-        homeBtn.className = "w-full bg-[#201a15] hover:bg-[#2c241e] text-white font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#2b221a]";
-        allBtn.className = "w-full bg-[#f97316] text-[#0d0c0a] font-bold px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer shadow-lg shadow-orange-500/20";
+        homeBtn.className = "w-full bg-[#121214] hover:bg-[#1c1c20] text-neutral-300 font-bold px-4 py-3 rounded-2xl flex items-center gap-3.5 text-sm transition cursor-pointer border border-[#27272a]";
+        allBtn.className = "w-full bg-white text-black font-bold px-4 py-2.5 rounded-2xl flex items-center justify-between text-sm transition cursor-pointer shadow-lg shadow-white/10";
         activeCreator = 'ALL';
         renderAllVideosView();
       }
@@ -1673,10 +1674,10 @@ def index_page():
     const dropZone = document.getElementById('drop-zone');
     if (dropZone) {
       ['dragenter', 'dragover'].forEach(name => {
-        dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.add('border-orange-500', 'bg-orange-50/20'); });
+        dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.add('border-black', 'bg-neutral-100'); });
       });
       ['dragleave', 'drop'].forEach(name => {
-        dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.remove('border-orange-500', 'bg-orange-50/20'); });
+        dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.remove('border-black', 'bg-neutral-100'); });
       });
       dropZone.addEventListener('drop', (e) => {
         const dt = e.dataTransfer;
@@ -1720,22 +1721,22 @@ def index_page():
       const liveDot = document.getElementById('player-live-dot');
 
       if (data.is_running) {
-        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-emerald-950 text-emerald-400 border border-emerald-800 shadow-sm shadow-emerald-500/20";
-        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span><span>Recording #${data.target_name}</span>`;
+        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-neutral-900 text-white border border-neutral-700 shadow-sm";
+        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-white animate-ping"></span><span>Recording #${data.target_name}</span>`;
         btnStart.classList.add('hidden');
         btnStop.classList.remove('hidden');
-        liveDot.className = "w-2 h-2 rounded-full bg-red-500 animate-pulse";
+        liveDot.className = "w-2 h-2 rounded-full bg-white animate-pulse";
 
         const hrs = String(Math.floor(data.elapsed_seconds / 3600)).padStart(2, '0');
         const mins = String(Math.floor((data.elapsed_seconds % 3600) / 60)).padStart(2, '0');
         const secs = String(data.elapsed_seconds % 60).padStart(2, '0');
         timer.textContent = `${hrs}:${mins}:${secs}`;
       } else {
-        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-stone-900 text-stone-400 border border-stone-800";
-        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-stone-600"></span><span>Standby</span>`;
+        streamerPill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-neutral-900 text-neutral-400 border border-neutral-800";
+        streamerPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-neutral-600"></span><span>Standby</span>`;
         btnStart.classList.remove('hidden');
         btnStop.classList.add('hidden');
-        liveDot.className = "w-2 h-2 rounded-full bg-stone-600";
+        liveDot.className = "w-2 h-2 rounded-full bg-neutral-600";
         timer.textContent = "00:00:00";
       }
 
@@ -1746,7 +1747,7 @@ def index_page():
           chartInstance.data.labels = data.bucket_history.map(b => b.time);
           chartInstance.data.datasets[0].data = data.bucket_history.map(b => b.count);
           chartInstance.data.datasets[0].backgroundColor = data.bucket_history.map(b => 
-            b.is_spike ? 'rgba(239, 68, 68, 0.9)' : (b.is_live ? 'rgba(251, 146, 60, 0.95)' : 'rgba(249, 115, 22, 0.75)')
+            b.is_spike ? 'rgba(255, 255, 255, 1)' : (b.is_live ? 'rgba(212, 212, 216, 0.95)' : 'rgba(255, 255, 255, 0.8)')
           );
           chartInstance.data.datasets[1].data = data.bucket_history.map(b => b.median);
           chartInstance.data.datasets[2].data = data.bucket_history.map(b => b.threshold);
@@ -1784,29 +1785,29 @@ def index_page():
       if (!container) return;
 
       if (!creators || creators.length === 0) {
-        container.innerHTML = `<div class="text-xs text-stone-500 px-3 py-2">No creators yet.</div>`;
+        container.innerHTML = `<div class="text-xs text-neutral-500 px-3 py-2">No creators yet.</div>`;
         return;
       }
 
       container.innerHTML = creators.map(c => {
         const isSelected = (currentView === 'STREAMER' && activeCreator === c.name);
         const activeClass = isSelected
-          ? 'bg-[#28221c] text-white shadow-sm'
-          : 'text-stone-300 hover:text-white hover:bg-[#1d1915]';
+          ? 'bg-[#27272a] text-white shadow-sm'
+          : 'text-neutral-400 hover:text-white hover:bg-[#18181b]';
 
         return `
           <div onclick="onSidebarCreatorClick('${escapeHtml(c.name)}')"
             class="flex items-center justify-between px-2.5 py-2 rounded-xl text-sm font-medium transition cursor-pointer group ${activeClass}">
             <div class="flex items-center gap-3 overflow-hidden">
-              <img src="${c.avatar}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(c.name)}&background=292524&color=f97316'"
-                class="w-7 h-7 rounded-full object-cover shrink-0 border border-stone-800" />
+              <img src="${c.avatar}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(c.name)}&background=27272a&color=ffffff'"
+                class="w-7 h-7 rounded-full object-cover shrink-0 border border-neutral-800" />
               <span class="truncate text-xs font-semibold">${escapeHtml(c.name)}</span>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
-              ${c.clip_count > 0 ? `<span class="text-[10px] font-mono font-bold text-stone-400 bg-stone-900 px-1.5 py-0.5 rounded-full">${c.clip_count}</span>` : ''}
+              ${c.clip_count > 0 ? `<span class="text-[10px] font-mono font-bold text-neutral-300 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded-full">${c.clip_count}</span>` : ''}
               <button onclick="event.stopPropagation(); removeCreator('${escapeHtml(c.name)}')"
                 title="Remove creator"
-                class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-stone-500 rounded transition cursor-pointer">
+                class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-neutral-500 rounded transition cursor-pointer">
                 <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
               </button>
             </div>
@@ -1847,25 +1848,25 @@ def index_page():
       if (countBadge) countBadge.textContent = filtered.length;
 
       if (filtered.length === 0) {
-        clipsList.innerHTML = `<div class="text-center py-8 text-xs text-stone-500">No clips found for ${activeCreator || 'this creator'}.</div>`;
+        clipsList.innerHTML = `<div class="text-center py-8 text-xs text-neutral-500">No clips found for ${activeCreator || 'this creator'}.</div>`;
         return;
       }
 
       clipsList.innerHTML = filtered.map(c => `
         <div onclick="playClip('${c.url}', '${c.srt_url || ''}', '${escapeHtml(c.name)}')"
-          class="p-2.5 rounded-xl border border-stone-800/80 hover:border-orange-500/60 bg-[#12100e] hover:bg-[#1c1814] transition flex items-center justify-between cursor-pointer group text-left">
+          class="p-2.5 rounded-xl border border-neutral-800 hover:border-neutral-500 bg-[#121214] hover:bg-[#18181b] transition flex items-center justify-between cursor-pointer group text-left">
           <div class="flex items-center gap-2.5 overflow-hidden">
             <span class="text-base">📱</span>
             <div class="truncate">
-              <div class="text-xs font-semibold text-stone-200 truncate group-hover:text-orange-300">${c.name}</div>
-              <div class="text-[10px] text-stone-400 font-mono">${c.streamer} &bull; ${c.created_at} &bull; ${c.size_mb} MB ${c.has_srt ? '&bull; <span class="text-amber-400 font-bold">SRT</span>' : ''}</div>
+              <div class="text-xs font-semibold text-neutral-200 truncate group-hover:text-white">${c.name}</div>
+              <div class="text-[10px] text-neutral-400 font-mono">${c.streamer} &bull; ${c.created_at} &bull; ${c.size_mb} MB ${c.has_srt ? '&bull; <span class="text-white font-bold">SRT</span>' : ''}</div>
             </div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button onclick="event.stopPropagation(); deleteSingleClip('${c.url}')" title="Delete clip" class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-stone-500 rounded transition cursor-pointer">
+            <button onclick="event.stopPropagation(); deleteSingleClip('${c.url}')" title="Delete clip" class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-neutral-500 rounded transition cursor-pointer">
               <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
             </button>
-            <span class="text-xs text-orange-400 font-mono group-hover:translate-x-0.5 transition">&rarr;</span>
+            <span class="text-xs text-white font-mono group-hover:translate-x-0.5 transition">&rarr;</span>
           </div>
         </div>
       `).join('');
@@ -1974,9 +1975,9 @@ def index_page():
       player.loop = isLooping;
       const btn = document.getElementById('btn-player-loop');
       if (isLooping) {
-        btn.className = "text-orange-400 font-bold transition p-1 cursor-pointer scale-110";
+        btn.className = "text-white font-bold transition p-1 cursor-pointer scale-110";
       } else {
-        btn.className = "text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer";
+        btn.className = "text-neutral-400 hover:text-white transition p-1 cursor-pointer";
       }
     }
 
@@ -2249,7 +2250,7 @@ def index_page():
               <button onclick="deleteSessionVideos('${escapeHtml(session.streamer)}')" title="Delete video list (keeps creator)" class="p-2 hover:text-red-500 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
                 <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
               </button>
-              <input type="checkbox" checked class="w-4 h-4 rounded accent-orange-500 ml-1 cursor-pointer" />
+              <input type="checkbox" checked class="w-4 h-4 rounded accent-black ml-1 cursor-pointer" />
             </div>
           </div>
 
@@ -2262,9 +2263,9 @@ def index_page():
                 <!-- 9:16 Background Video with Blurred Extension -->
                 <video src="${c.url}" playsinline muted preload="metadata" class="w-full h-full object-contain pointer-events-none"></video>
 
-                <!-- Top-Left Orange Score Badge (e.g. 85, 90) -->
+                <!-- Top-Left High-Contrast Score Badge (e.g. 85, 90) -->
                 <div class="absolute top-2.5 left-2.5 z-10 pointer-events-none">
-                  <span class="bg-[#f97316] text-[#0d0c0a] font-black text-xs px-2 py-0.5 rounded-lg shadow-md tracking-tight">
+                  <span class="bg-black text-white border border-white/30 font-black text-xs px-2 py-0.5 rounded-lg shadow-md tracking-tight">
                     ${c.score}
                   </span>
                 </div>
@@ -2458,8 +2459,8 @@ def index_page():
       player.loop = modalLooping;
       const btn = document.getElementById('btn-modal-loop');
       btn.className = modalLooping
-        ? "text-orange-400 font-bold transition p-1 cursor-pointer scale-110"
-        : "text-stone-400 hover:text-orange-400 transition p-1 cursor-pointer";
+        ? "text-white font-bold transition p-1 cursor-pointer scale-110"
+        : "text-neutral-400 hover:text-white transition p-1 cursor-pointer";
     }
 
     // Startup
@@ -2476,7 +2477,7 @@ def index_page():
 
 def main():
     import uvicorn
-    parser = argparse.ArgumentParser(description="clip-watcher Studio Server")
+    parser = argparse.ArgumentParser(description="Clip Max Studio Server")
     parser.add_argument("--port", type=int, default=8000, help="Port to run web server on")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind server to")
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser automatically")
@@ -2486,7 +2487,7 @@ def main():
         threading.Thread(target=lambda: (time.sleep(1.2), webbrowser.open(f"http://localhost:{args.port}")), daemon=True).start()
 
     print(f"""=================================================================
-      PEAK CUT STUDIO (CREATORS HUB & 9:16 BLUR)       
+       CLIP MAX STUDIO (CREATORS HUB & 9:16 BLUR)       
 =================================================================
  URL             : http://{args.host}:{args.port}
  Streamers Hub   : Left Sidebar (Home, All Videos, Creators)
