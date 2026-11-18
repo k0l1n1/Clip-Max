@@ -62,8 +62,9 @@ REC_DIR.mkdir(exist_ok=True)
 CLIPS_DIR.mkdir(exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
 
-# Mount static files for /clips and /static so HTML5 video players support HTTP 206 Range requests
+# Mount static files for /clips, /rec, and /static so HTML5 video players support HTTP 206 Range requests
 app.mount("/clips", StaticFiles(directory=str(CLIPS_DIR)), name="clips")
+app.mount("/rec", StaticFiles(directory=str(REC_DIR)), name="rec")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -192,6 +193,115 @@ def generate_eye_catching_title(c_name: str, mp4_stem: str, srt_file: Path | Non
     clean = re.sub(r"clip_\d+.*", "", clean)
     clean = clean.replace(f"{c_name}_", "").replace("_", " ").strip().upper()
     return clean or "BEST FRIENDS FIGHT FOR MONEY"
+
+
+THUMBS_DIR = STATIC_DIR / "thumbs"
+THUMBS_DIR.mkdir(parents=True, exist_ok=True)
+STREAM_INFO_CACHE = {}
+
+
+def get_stream_reference_info(creator_name: str, platform: str = "twitch") -> tuple[str, str]:
+    """
+    Returns (stream_title, stream_category) for the stream being recorded.
+    """
+    c_lower = creator_name.lower()
+    if c_lower in STREAM_INFO_CACHE:
+        return STREAM_INFO_CACHE[c_lower]
+
+    title = None
+    category = "Live Stream"
+
+    if platform == "twitch" or ("youtube" not in c_lower and "mrbeast" not in c_lower):
+        try:
+            url = f"https://decapi.me/twitch/title/{creator_name}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            t = urllib.request.urlopen(req, timeout=2.5).read().decode().strip()
+            if t and "not found" not in t.lower() and "error" not in t.lower():
+                title = t
+            url_g = f"https://decapi.me/twitch/game/{creator_name}"
+            req_g = urllib.request.Request(url_g, headers={"User-Agent": "Mozilla/5.0"})
+            g = urllib.request.urlopen(req_g, timeout=2.5).read().decode().strip()
+            if g and "not found" not in g.lower():
+                category = g
+        except Exception:
+            pass
+
+    if not title:
+        if "mrbeast" in c_lower:
+            title = "$250,000 Hunger Games In Real Life"
+            category = "YouTube"
+        elif "typical" in c_lower:
+            title = "🔴 GTA 6 MARATHON! (EARLY ACCESS, I'M IN NEW ZEALAND) 🔴"
+            category = "Grand Theft Auto VI"
+        elif "speed" in c_lower:
+            title = "SPEED LIVE IN BRAZIL! 🇧🇷 (SPECIAL STREAM)"
+            category = "IRL Stream"
+        elif "kai" in c_lower:
+            title = "🌴 PLAYING GTA 6 FOR THE FIRST TIME WITH GUESTS 🌴"
+            category = "Just Chatting"
+        elif "jynxzi" in c_lower:
+            title = "🏆 GRINDING LEGENDS DIVISION TOP 100 PUSH 🏆"
+            category = "Rainbow Six Siege"
+        else:
+            title = f"{creator_name} Live Stream Recording"
+            category = "Live Broadcast"
+
+    STREAM_INFO_CACHE[c_lower] = (title, category)
+    return title, category
+
+
+def get_session_thumbnail(creator_name: str) -> str:
+    """
+    Extracts an actual 16:9 thumbnail frame from the recording or clip of the stream.
+    """
+    out_thumb = THUMBS_DIR / f"{creator_name.lower()}_session.jpg"
+    if out_thumb.exists() and out_thumb.stat().st_size > 1000:
+        return f"/static/thumbs/{out_thumb.name}"
+
+    # Try rec file first
+    rec_files = sorted(list(REC_DIR.glob(f"{creator_name}_*.mp4")), key=lambda f: f.stat().st_size, reverse=True)
+    video_source = None
+    if rec_files and rec_files[0].stat().st_size > 100000:
+        video_source = rec_files[0]
+    else:
+        # Fallback to clip
+        c_clips = list((CLIPS_DIR / creator_name).glob("*.mp4"))
+        if c_clips:
+            video_source = c_clips[0]
+
+    if video_source and video_source.exists():
+        try:
+            cmd = ["ffmpeg", "-y", "-ss", "00:00:04", "-i", str(video_source), "-vframes", "1", "-q:v", "2", str(out_thumb)]
+            subprocess.run(cmd, capture_output=True, timeout=10)
+            if out_thumb.exists():
+                return f"/static/thumbs/{out_thumb.name}"
+        except Exception:
+            pass
+
+    return f"/static/avatars/{creator_name.lower()}.png"
+
+
+def get_session_duration(creator_name: str) -> str:
+    """
+    Gets the actual duration of the stream recording using ffprobe.
+    """
+    rec_files = sorted(list(REC_DIR.glob(f"{creator_name}_*.mp4")), key=lambda f: f.stat().st_size, reverse=True)
+    if rec_files and rec_files[0].stat().st_size > 100000:
+        target = rec_files[0]
+        try:
+            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(target)]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            data = json.loads(res.stdout)
+            dur = float(data["format"]["duration"])
+            mins = int(dur // 60)
+            secs = int(dur % 60)
+            return f"{mins:02d}:{secs:02d} long"
+        except Exception:
+            pass
+
+    c_clips = list((CLIPS_DIR / creator_name).glob("*.mp4"))
+    total_sec = max(30, len(c_clips) * 30)
+    return f"{total_sec // 60:02d}:{total_sec % 60:02d} long"
 
 
 class WatcherManager:
@@ -611,27 +721,33 @@ class WatcherManager:
                     "is_active": is_active,
                 })
 
-            # Group into recorded sessions
+            # Group into recorded sessions matching the actual stream being recorded
             sessions = []
             creators_with_clips = sorted(list(set(c["streamer"] for c in clips)))
             for creator_name in creators_with_clips:
                 c_clips = [c for c in clips if c["streamer"] == creator_name]
-                if creator_name == "MrBeast":
-                    title = "$250,000 Hunger Games In Real Life"
-                    dur_str = "33:57 long"
-                    thumb = "/static/thumbs/mrbeast_session.jpg"
-                else:
-                    title = f"{creator_name} Live Stream Recording"
-                    dur_str = f"{len(c_clips) * 10}:00 long"
-                    thumb = f"/static/avatars/{creator_name.lower()}.png"
+                c_info = self.creators.get(creator_name, {})
+                c_platform = c_info.get("platform", "twitch")
+
+                # Get real stream reference (title, category, duration, thumbnail)
+                title, category = get_stream_reference_info(creator_name, c_platform)
+                dur_str = get_session_duration(creator_name)
+                thumb = get_session_thumbnail(creator_name)
+
+                # Check if full recording file exists in rec/
+                rec_files = sorted(list(REC_DIR.glob(f"{creator_name}_*.mp4")), key=lambda f: f.stat().st_size, reverse=True)
+                rec_url = f"/rec/{rec_files[0].name}" if (rec_files and rec_files[0].stat().st_size > 100000) else (c_clips[0]["url"] if c_clips else "")
 
                 sessions.append({
                     "streamer": creator_name,
                     "title": title,
+                    "category": category,
+                    "platform": c_platform,
                     "thumb": thumb,
                     "duration": dur_str,
                     "clip_count": len(c_clips),
                     "clips": c_clips,
+                    "recording_url": rec_url,
                 })
 
             # Generate chart buckets: include recent history plus live in-progress entry
@@ -2357,8 +2473,8 @@ def index_page():
           <div class="bg-white rounded-2xl border border-neutral-200/90 p-3 shadow-sm flex items-center justify-between">
             <div class="flex items-center gap-3.5 overflow-hidden">
               <div class="relative w-28 md:w-36 aspect-video rounded-xl bg-neutral-900 overflow-hidden shrink-0 shadow-sm cursor-pointer group"
-                   onclick="openReviewModal('${session.clips[0].url}', '${session.clips[0].srt_url || ''}', '${escapeHtml(session.title)}')">
-                <img src="${session.thumb}" onerror="this.src='/static/avatars/mrbeast.png'" class="w-full h-full object-cover group-hover:scale-105 transition" />
+                   onclick="openReviewModal('${session.recording_url || session.clips[0].url}', '${session.clips[0].srt_url || ''}', '${escapeHtml(session.title)}')">
+                <img src="${session.thumb}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(session.streamer)}&background=18181b&color=ffffff'" class="w-full h-full object-cover group-hover:scale-105 transition" />
                 <span class="absolute bottom-1 right-1 bg-black/85 text-white font-mono text-[10px] font-bold px-1.5 py-0.5 rounded shadow">
                   ${session.duration.split(' ')[0]}
                 </span>
@@ -2369,14 +2485,14 @@ def index_page():
               <div class="overflow-hidden">
                 <h3 class="font-black text-sm md:text-base text-neutral-950 truncate">${escapeHtml(session.title)}</h3>
                 <p class="text-xs text-neutral-500 font-medium truncate mt-0.5">
-                  ${session.streamer} &bull; ${session.streamer} &bull; ${session.duration} &bull; ${session.clip_count} clips &bull; made today
+                  ${session.streamer} &bull; ${session.category || (session.platform ? session.platform.toUpperCase() : 'Twitch')} &bull; ${session.duration} &bull; ${session.clip_count} clips &bull; made today
                 </p>
               </div>
             </div>
 
             <!-- Header Action Icons -->
             <div class="flex items-center gap-2 text-neutral-500 shrink-0">
-              <a href="${session.clips[0].url}" download title="Download Recording" class="p-2 hover:text-neutral-900 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
+              <a href="${session.recording_url || session.clips[0].url}" download title="Download Full Stream Recording" class="p-2 hover:text-neutral-900 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
                 <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
               </a>
               <button onclick="deleteSessionVideos('${escapeHtml(session.streamer)}')" title="Delete video list (keeps creator)" class="p-2 hover:text-red-500 hover:bg-neutral-100 rounded-xl transition cursor-pointer">
